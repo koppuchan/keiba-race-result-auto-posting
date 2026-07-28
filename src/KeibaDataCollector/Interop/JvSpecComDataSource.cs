@@ -32,17 +32,7 @@ namespace KeibaDataCollector.Interop
 
         public void Initialize(string softwareId)
         {
-            _type = Type.GetTypeFromProgID(_progId);
-            if (_type == null)
-            {
-                throw new InvalidOperationException(
-                    $"COMオブジェクト '{_progId}' が見つかりません。" +
-                    $"{SourceName} がこのPCにインストール・登録されているか確認してください。" +
-                    "（UmaConnの場合、ProgIDが 'NVDTLab.NVLink' で正しいか未確認 -- " +
-                    "レジストリのHKEY_CLASSES_ROOTでNVDTLab関連のキーを確認するか、" +
-                    "UmaConn付属のサンプルコードを確認してください）");
-            }
-            _com = Activator.CreateInstance(_type);
+            EnsureComObject();
 
             // JVInit(string sid) -- sidはJRA-VANソフトウェアID相当。UmaConn側で同名メソッドか要確認。
             int rc = (int)Invoke("JVInit", softwareId);
@@ -54,7 +44,26 @@ namespace KeibaDataCollector.Interop
         {
             // JVSetUIProperties() -- 利用キー入力ダイアログを表示し、設定を保存する。
             // 初回のみ手動実行想定（自動実行フローには組み込まない）。
+            // JVInitより前に呼べる想定のため、Initialize()を経由せずCOMオブジェクトだけ用意する。
+            EnsureComObject();
             Invoke("JVSetUIProperties");
+        }
+
+        private void EnsureComObject()
+        {
+            if (_com != null) return;
+
+            _type = Type.GetTypeFromProgID(_progId);
+            if (_type == null)
+            {
+                throw new InvalidOperationException(
+                    $"COMオブジェクト '{_progId}' が見つかりません。" +
+                    $"{SourceName} がこのPCにインストール・登録されているか確認してください。" +
+                    "（UmaConnの場合、ProgIDが 'NVDTLab.NVLink' で正しいか未確認 -- " +
+                    "レジストリのHKEY_CLASSES_ROOTでNVDTLab関連のキーを確認するか、" +
+                    "UmaConn付属のサンプルコードを確認してください）");
+            }
+            _com = Activator.CreateInstance(_type);
         }
 
         public OpenResult Open(string dataSpec, string fromTime, DataOption option)

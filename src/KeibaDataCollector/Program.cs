@@ -63,8 +63,10 @@ namespace KeibaDataCollector
 
                     case "setup":
                         // 初回1回だけ手動実行: 利用キー入力ダイアログを開いて設定を保存する。
-                        jvLink.RunInteractiveSetup();
-                        umaConn.RunInteractiveSetup();
+                        // 片方のProgIDが未確認/未登録でもう片方の結果が分からなくなるのを避けるため、
+                        // 個別にtry/catchして両方の結果を必ず表示する。
+                        RunSetupFor(jvLink);
+                        RunSetupFor(umaConn);
                         break;
 
                     default:
@@ -74,6 +76,20 @@ namespace KeibaDataCollector
                         Console.WriteLine("  watch   : レース確定を監視し、結果・払戻を随時WordPressへ反映する。");
                         break;
                 }
+            }
+        }
+
+        private static void RunSetupFor(JvSpecComDataSource source)
+        {
+            Console.WriteLine($"[{source.SourceName}] セットアップダイアログを開きます...");
+            try
+            {
+                source.RunInteractiveSetup();
+                Console.WriteLine($"[{source.SourceName}] セットアップ完了。");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[{source.SourceName}] セットアップ失敗: {ex.Message}");
             }
         }
     }
