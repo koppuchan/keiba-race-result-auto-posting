@@ -3,7 +3,7 @@
  * Plugin Name: Keiba Race Sync
  * Description: JV-Link/UmaConn連携の常駐アプリ（KeibaDataCollector）から送られる出走表・結果データを受け取り、
  *              カスタム投稿タイプ「race」として保存・表示する。
- * Version: 0.1.0
+ * Version: 0.1.1
  */
 
 if (!defined('ABSPATH')) {
@@ -26,7 +26,9 @@ add_action('init', function () {
         'public' => true,
         'show_in_rest' => true,
         'rest_base' => 'race',
-        'supports' => array('title'),
+        // 'custom-fields' が supports に無いと、register_post_meta で登録したメタが
+        // REST レスポンスの "meta" プロパティに一切出てこない（WPの既知の挙動）。
+        'supports' => array('title', 'custom-fields'),
         'has_archive' => true,
         'rewrite' => array('slug' => 'race'),
         'menu_icon' => 'dashicons-flag',
