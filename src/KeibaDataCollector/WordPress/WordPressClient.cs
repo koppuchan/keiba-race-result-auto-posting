@@ -1,10 +1,12 @@
 using System;
+using System.Collections.Generic;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Threading.Tasks;
 using KeibaDataCollector.Models;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Serialization;
 
 namespace KeibaDataCollector.WordPress
 {
@@ -12,14 +14,23 @@ namespace KeibaDataCollector.WordPress
     /// WordPress REST API 経由でカスタム投稿タイプ "race" を作成・更新するクライアント。
     /// 認証は Application Passwords（WP標準機能、WP 5.6+）を使用する。
     ///
-    /// 前提（WordPress側で別途必要な準備）:
+    /// 前提（WordPress側で別途必要な準備。src/wordpress-plugin/keiba-race-sync が対応）:
     ///  - カスタム投稿タイプ "race" を show_in_rest=true で登録
     ///  - race_key, race_card, race_result, payouts, corner_passage を
     ///    register_post_meta で REST 経由の読み書きを許可
     ///  - 対象ユーザーでアプリケーションパスワードを発行し、環境変数 WordPressAppPassword に設定
+    ///
+    /// race_card/race_result/payouts/corner_passage は、WPのREST metaスキーマ検証が
+    /// 任意ネスト構造の配列を安定して受け付けないため、camelCaseキーのJSON文字列として送る
+    /// （WP側は register_post_meta の type を "string" で登録し、表示時にjson_decodeする）。
     /// </summary>
     public class WordPressClient
     {
+        private static readonly JsonSerializerSettings CamelCaseSettings = new JsonSerializerSettings
+        {
+            ContractResolver = new CamelCasePropertyNamesContractResolver(),
+        };
+
         private readonly HttpClient _http;
         private readonly string _baseUrl;
 
@@ -31,7 +42,7 @@ namespace KeibaDataCollector.WordPress
             _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", token);
         }
 
-        public async Task UpsertRaceCardAsync(RaceKey key, object raceCardEntries)
+        public async Task UpsertRaceCardAsync(RaceKey key, List<RaceCardEntry> raceCardEntries)
         {
             var existingId = await FindPostIdByRaceKeyAsync(key.AsSlug());
             var payload = new
@@ -41,7 +52,7 @@ namespace KeibaDataCollector.WordPress
                 meta = new
                 {
                     race_key = key.AsSlug(),
-                    race_card = raceCardEntries,
+                    race_card = JsonConvert.SerializeObject(raceCardEntries, CamelCaseSettings),
                 }
             };
             await SendAsync(existingId, payload);
@@ -57,9 +68,9 @@ namespace KeibaDataCollector.WordPress
                 meta = new
                 {
                     race_key = result.Key.AsSlug(),
-                    race_result = result.Entries,
-                    payouts = result.Payouts,
-                    corner_passage = result.CornerPassage,
+                    race_result = JsonConvert.SerializeObject(result.Entries, CamelCaseSettings),
+                    payouts = JsonConvert.SerializeObject(result.Payouts, CamelCaseSettings),
+                    corner_passage = JsonConvert.SerializeObject(result.CornerPassage, CamelCaseSettings),
                 }
             };
             await SendAsync(existingId, payload);

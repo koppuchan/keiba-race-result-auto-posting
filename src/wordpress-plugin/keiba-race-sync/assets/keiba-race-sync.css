@@ -1,0 +1,65 @@
+.keiba-race {
+    margin: 1.5em 0;
+}
+
+.keiba-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 1.5em;
+    font-size: 0.95em;
+}
+
+.keiba-table caption {
+    text-align: left;
+    font-weight: bold;
+    margin-bottom: 0.5em;
+}
+
+.keiba-table th,
+.keiba-table td {
+    border: 1px solid #ddd;
+    padding: 0.4em 0.6em;
+    text-align: center;
+    white-space: nowrap;
+}
+
+.keiba-result-table th:nth-child(4),
+.keiba-result-table td:nth-child(4),
+.keiba-card-table th:nth-child(3),
+.keiba-card-table td:nth-child(3) {
+    text-align: left;
+    white-space: normal;
+}
+
+.keiba-table thead th {
+    background: #f2f2f2;
+}
+
+.keiba-sub-tables {
+    display: flex;
+    gap: 2em;
+    flex-wrap: wrap;
+}
+
+.keiba-sub-tables .keiba-table {
+    flex: 1 1 320px;
+}
+
+/* 枠番カラー（JRA慣例配色） */
+.keiba-waku {
+    display: inline-block;
+    min-width: 1.6em;
+    padding: 0.1em 0.3em;
+    border-radius: 3px;
+    font-weight: bold;
+    border: 1px solid #999;
+}
+
+.keiba-waku-1 { background: #ffffff; color: #000000; }
+.keiba-waku-2 { background: #000000; color: #ffffff; border-color: #000; }
+.keiba-waku-3 { background: #e60012; color: #ffffff; border-color: #e60012; }
+.keiba-waku-4 { background: #0068b7; color: #ffffff; border-color: #0068b7; }
+.keiba-waku-5 { background: #fff100; color: #000000; border-color: #d8d000; }
+.keiba-waku-6 { background: #009944; color: #ffffff; border-color: #009944; }
+.keiba-waku-7 { background: #f39800; color: #000000; border-color: #f39800; }
+.keiba-waku-8 { background: #e85298; color: #ffffff; border-color: #e85298; }
