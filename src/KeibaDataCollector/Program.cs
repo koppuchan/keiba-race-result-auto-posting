@@ -16,8 +16,8 @@ namespace KeibaDataCollector
 
             // WordPressClient はここでは作らない: setup モードはWordPressに一切繋がないため、
             // WordPressUser/WordPressAppPassword 未設定でも setup だけは実行できるようにする。
-            using (var jvLink = new JvSpecComDataSource(AppConfig.JvLinkProgId, "JV-Link(中央競馬)"))
-            using (var umaConn = new JvSpecComDataSource(AppConfig.UmaConnProgId, "UmaConn(地方競馬)"))
+            using (var jvLink = new JvSpecComDataSource(AppConfig.JvLinkProgId, "JV", "JV-Link(中央競馬)"))
+            using (var umaConn = new JvSpecComDataSource(AppConfig.UmaConnProgId, "NV", "UmaConn(地方競馬)"))
             {
                 switch (mode)
                 {

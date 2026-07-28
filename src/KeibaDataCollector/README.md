@@ -16,6 +16,9 @@ WordPressへ自動反映するWindows常駐アプリの土台。
 
 1. ~~**UmaConnの正確なProgID**~~ → 実機のレジストリで確認済み: `NVDTLabLib.NVLink`（`App.config`反映済み）。
    `setup`コマンドでUmaConn側のダイアログも開くことを確認済み。
+1b. ~~**メソッド名のプレフィックス**~~ → 実機で `New-Object -ComObject` + `Get-Member`により、
+    JV-LinkとUmaConnは同じメソッド一覧を `JV*`/`NV*` のプレフィックス違いで持つことを確認済み
+    （`JvSpecComDataSource`にmethodPrefix引数として反映済み）。
 2. **JVOpen / JVRead 等の引数の正確な型・並び順**
    - `JvSpecComDataSource.cs` 内のコメントに記載した想定シグネチャは、コミュニティで広く使われている
      一般的な形ですが、公式のJV-Link/UmaConnインターフェース仕様書で最終確認してください。

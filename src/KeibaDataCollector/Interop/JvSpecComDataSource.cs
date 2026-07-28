@@ -6,8 +6,13 @@ namespace KeibaDataCollector.Interop
 {
     /// <summary>
     /// JV-Link / UmaConn 共通の後期バインド(late-bound)COMラッパー。
-    /// 両者は同一のJV-Link Interface Specificationに準拠しているため、ProgIDを差し替えるだけで
-    /// どちらのデータソースにも使える。
+    /// 両者は同一のインターフェース仕様に準拠しているが、メソッド名のプレフィックスが異なる
+    /// （JV-Link: JV*, UmaConn: NV*）。実機のCOM型情報を確認して判明した対応表:
+    ///   JVInit  ⇔ NVInit,  JVOpen ⇔ NVOpen,  JVRead ⇔ NVRead,  JVClose ⇔ NVClose,
+    ///   JVRTOpen ⇔ NVRTOpen,  JVSetUIProperties ⇔ NVSetUIProperties,
+    ///   JVSetServiceKey ⇔ NVSetServiceKey 等（PowerShellから New-Object -ComObject で
+    ///   Get-Member して両COMオブジェクトのメソッド一覧を比較し確認済み）。
+    /// そのためProgIDに加えてmethodPrefix（"JV"/"NV"）を渡す。
     ///
     /// 後期バインド（Type.GetTypeFromProgID + InvokeMember）を採用している理由:
     /// Visual StudioでCOM参照を追加すると型名は実行環境ごとに生成されるインタロップアセンブリに依存するため、
@@ -19,14 +24,16 @@ namespace KeibaDataCollector.Interop
     public class JvSpecComDataSource : IRaceDataSource
     {
         private readonly string _progId;
+        private readonly string _methodPrefix;
         private object _com;
         private Type _type;
 
         public string SourceName { get; }
 
-        public JvSpecComDataSource(string progId, string sourceName)
+        public JvSpecComDataSource(string progId, string methodPrefix, string sourceName)
         {
             _progId = progId;
+            _methodPrefix = methodPrefix;
             SourceName = sourceName;
         }
 
@@ -34,19 +41,19 @@ namespace KeibaDataCollector.Interop
         {
             EnsureComObject();
 
-            // JVInit(string sid) -- sidはJRA-VANソフトウェアID相当。UmaConn側で同名メソッドか要確認。
-            int rc = (int)Invoke("JVInit", softwareId);
+            // JVInit/NVInit(string sid) -- sidはJRA-VANソフトウェアID相当。
+            int rc = (int)Invoke("Init", softwareId);
             if (rc < 0)
-                throw new InvalidOperationException($"{SourceName} JVInit failed: {rc}");
+                throw new InvalidOperationException($"{SourceName} {_methodPrefix}Init failed: {rc}");
         }
 
         public void RunInteractiveSetup()
         {
-            // JVSetUIProperties() -- 利用キー入力ダイアログを表示し、設定を保存する。
+            // JVSetUIProperties/NVSetUIProperties() -- 利用キー入力ダイアログを表示し、設定を保存する。
             // 初回のみ手動実行想定（自動実行フローには組み込まない）。
-            // JVInitより前に呼べる想定のため、Initialize()を経由せずCOMオブジェクトだけ用意する。
+            // Initより前に呼べる想定のため、Initialize()を経由せずCOMオブジェクトだけ用意する。
             EnsureComObject();
-            Invoke("JVSetUIProperties");
+            Invoke("SetUIProperties");
         }
 
         private void EnsureComObject()
@@ -58,21 +65,18 @@ namespace KeibaDataCollector.Interop
             {
                 throw new InvalidOperationException(
                     $"COMオブジェクト '{_progId}' が見つかりません。" +
-                    $"{SourceName} がこのPCにインストール・登録されているか確認してください。" +
-                    "（UmaConnの場合、ProgIDが 'NVDTLab.NVLink' で正しいか未確認 -- " +
-                    "レジストリのHKEY_CLASSES_ROOTでNVDTLab関連のキーを確認するか、" +
-                    "UmaConn付属のサンプルコードを確認してください）");
+                    $"{SourceName} がこのPCにインストール・登録されているか確認してください。");
             }
             _com = Activator.CreateInstance(_type);
         }
 
         public OpenResult Open(string dataSpec, string fromTime, DataOption option)
         {
-            // JVOpen(string dataspec, string fromtime, int option,
+            // JVOpen/NVOpen(string dataspec, string fromtime, int option,
             //        out int readcount, out int downloadcount, out string lastfiletimestamp)
             // 引数の正確な型・並び順はJV-Link/UmaConn仕様書で要確認。
             var args = new object[] { dataSpec, fromTime, (int)option, 0, 0, "" };
-            int rc = (int)Invoke("JVOpen", args);
+            int rc = (int)Invoke("Open", args);
 
             return new OpenResult
             {
@@ -85,9 +89,9 @@ namespace KeibaDataCollector.Interop
 
         public int Read(out string buffer, out string fileName)
         {
-            // JVRead(out string buff, out int size, out string filename)
+            // JVRead/NVRead(out string buff, out int size, out string filename)
             var args = new object[] { string.Empty, 110000, string.Empty };
-            int rc = (int)Invoke("JVRead", args);
+            int rc = (int)Invoke("Read", args);
             buffer = args[0] as string ?? string.Empty;
             fileName = args[2] as string ?? string.Empty;
             return rc;
@@ -95,15 +99,23 @@ namespace KeibaDataCollector.Interop
 
         public int OpenRealtime(string dataSpec, string key)
         {
-            // JVRTOpen(string dataspec, string key) -- リアルタイム系データ種別コードは仕様書で要確認
+            // JVRTOpen/NVRTOpen(string dataspec, string key) -- リアルタイム系データ種別コードは仕様書で要確認
             // （速報オッズ/中間成績/確定成績/払戻 等でコードが分かれている）。
-            return (int)Invoke("JVRTOpen", dataSpec, key);
+            return (int)Invoke("RTOpen", dataSpec, key);
         }
 
         public void Close()
         {
-            if (_com != null)
-                Invoke("JVClose");
+            if (_com == null) return;
+            try
+            {
+                Invoke("Close");
+            }
+            catch (Exception ex)
+            {
+                // Dispose経路から呼ばれるため、後片付けの失敗でアプリ全体を落とさない。
+                Console.WriteLine($"[{SourceName}] Close失敗（無視して続行）: {ex.Message}");
+            }
         }
 
         public void Dispose()
@@ -114,8 +126,9 @@ namespace KeibaDataCollector.Interop
             _com = null;
         }
 
-        private object Invoke(string method, params object[] args)
+        private object Invoke(string methodSuffix, params object[] args)
         {
+            var method = _methodPrefix + methodSuffix;
             return _type.InvokeMember(
                 method,
                 BindingFlags.InvokeMethod,
