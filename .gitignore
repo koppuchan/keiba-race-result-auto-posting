@@ -4,3 +4,9 @@ obj/
 .vs/
 secrets.local.bat
 .env
+
+# JRA-VAN公式SDK配布物一式（インストーラ・ドキュメント・サンプル等）。
+# ライセンス上、必要なファイル（JVData_Struct.cs）だけを
+# src/KeibaDataCollector/Interop/JvDataSdk/ に配置してそちらをコミット対象にする。
+/JRA-VAN Data Lab. SDK Ver*/
+/JVDTLABSDK*.zip

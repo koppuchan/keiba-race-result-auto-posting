@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using KeibaDataCollector.Interop;
+using KeibaDataCollector.Models;
 using KeibaDataCollector.WordPress;
 
 namespace KeibaDataCollector.Services
@@ -19,28 +20,45 @@ namespace KeibaDataCollector.Services
 
         public void RunMorningBatch(DateTime targetDate, string trackCode)
         {
-            // dataspec "RACE" は番組表系レコードを想定。正確な値はJV-Data仕様書のデータ種別一覧で要確認。
+            // dataspec "RACE" は番組表系レコードを想定。JV-Linkインターフェース仕様書のJVOpen
+            // option早見表(option=2:今週データ)で dataspec="RACE" 指定可であることを確認済み。
             var fromTime = targetDate.ToString("yyyyMMdd") + "000000";
             var open = _source.Open("RACE", fromTime, DataOption.ThisWeekAndToday);
             if (open.ReturnCode < 0)
                 throw new InvalidOperationException($"{_source.SourceName} Open failed: {open.ReturnCode}");
 
-            var rawRecords = new List<string>();
+            var entriesByRace = new Dictionary<string, List<RaceCardEntry>>();
+            var raceKeys = new Dictionary<string, RaceKey>();
+
             while (true)
             {
                 int size = _source.Read(out var buffer, out _);
                 if (size == 0) break;
                 if (size < 0) continue; // ファイル切り替わり等の制御コード
 
-                if (JvRecordParser.GetRecordTypeId(buffer) == "SE")
-                    rawRecords.Add(buffer);
+                if (JvRecordParser.GetRecordTypeId(buffer) != "SE") continue;
+
+                var (raceKey, entry) = JvRecordParser.ParseRaceCard(buffer);
+                var slug = raceKey.AsSlug();
+                if (!entriesByRace.TryGetValue(slug, out var list))
+                {
+                    list = new List<RaceCardEntry>();
+                    entriesByRace[slug] = list;
+                    raceKeys[slug] = raceKey;
+                }
+                list.Add(entry);
             }
             _source.Close();
 
-            // TODO: rawRecords を JvRecordParser.ParseRaceCardEntry でDTO化し、
-            // レースキーごとにグルーピングしてから UpsertRaceCardAsync を呼ぶ。
-            // 現状はJVData_Struct.cs未組み込みのためパース未実装（JvRecordParser参照）。
-            Console.WriteLine($"[{_source.SourceName}] {targetDate:yyyy-MM-dd} 出走表レコード {rawRecords.Count} 件取得（パース未実装）");
+            foreach (var slug in entriesByRace.Keys)
+            {
+                var entries = entriesByRace[slug];
+                entries.Sort((a, b) => a.Umaban.CompareTo(b.Umaban));
+                _wp.UpsertRaceCardAsync(raceKeys[slug], entries).GetAwaiter().GetResult();
+                Console.WriteLine($"[{_source.SourceName}] {slug} 出走表 {entries.Count}頭 反映完了");
+            }
+
+            Console.WriteLine($"[{_source.SourceName}] {targetDate:yyyy-MM-dd} 出走表 {entriesByRace.Count}レース 反映完了");
         }
     }
 }
