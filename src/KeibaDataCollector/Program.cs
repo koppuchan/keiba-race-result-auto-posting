@@ -28,12 +28,10 @@ namespace KeibaDataCollector
                             AppConfig.WordPressUser,
                             AppConfig.WordPressAppPassword);
 
-                        // 初回のみ RunInteractiveSetup() を手動実行して利用キーをGUIで登録しておくこと。
-                        jvLink.Initialize(AppConfig.JvLinkSoftwareId);
-                        umaConn.Initialize(AppConfig.JvLinkSoftwareId);
-
-                        new RaceCardService(jvLink, wp).RunMorningBatch(DateTime.Today, trackCode: "");
-                        new RaceCardService(umaConn, wp).RunMorningBatch(DateTime.Today, trackCode: "");
+                        // 片方のソース（例: UmaConn未設置）が失敗しても、もう片方は必ず動くように
+                        // ソースごとに独立してtry/catchする。
+                        RunMorningFor(jvLink, wp);
+                        RunMorningFor(umaConn, wp);
                         break;
                     }
 
@@ -44,17 +42,15 @@ namespace KeibaDataCollector
                             AppConfig.WordPressUser,
                             AppConfig.WordPressAppPassword);
 
-                        jvLink.Initialize(AppConfig.JvLinkSoftwareId);
-                        umaConn.Initialize(AppConfig.JvLinkSoftwareId);
-
                         using (var cts = new CancellationTokenSource())
                         {
                             Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
 
-                            var jvResultTask = new RaceResultService(jvLink, wp, AppConfig.RealtimePollInterval)
-                                .RunWatchLoopAsync(realtimeDataSpec: "0B12", key: "", cts.Token); // データ種別コード要確認
-                            var umaResultTask = new RaceResultService(umaConn, wp, AppConfig.RealtimePollInterval)
-                                .RunWatchLoopAsync(realtimeDataSpec: "0B12", key: "", cts.Token); // データ種別コード要確認
+                            // データ種別コード"0B12"(払戻確定)はJV-Linkインターフェース仕様書のJVRTOpen
+                            // 対応表で確認済み。ソースごとに独立してtry/catchし、片方の失敗が
+                            // もう片方の監視を止めないようにする。
+                            var jvResultTask = RunWatchFor(jvLink, wp, cts.Token);
+                            var umaResultTask = RunWatchFor(umaConn, wp, cts.Token);
 
                             System.Threading.Tasks.Task.WaitAll(jvResultTask, umaResultTask);
                         }
@@ -90,6 +86,34 @@ namespace KeibaDataCollector
             catch (Exception ex)
             {
                 Console.WriteLine($"[{source.SourceName}] セットアップ失敗: {ex.Message}");
+            }
+        }
+
+        private static void RunMorningFor(JvSpecComDataSource source, WordPress.WordPressClient wp)
+        {
+            try
+            {
+                source.Initialize(AppConfig.JvLinkSoftwareId);
+                new RaceCardService(source, wp).RunMorningBatch(DateTime.Today, trackCode: "");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[{source.SourceName}] 朝一バッチ失敗（このソースのみスキップして続行）: {ex.Message}");
+            }
+        }
+
+        private static async System.Threading.Tasks.Task RunWatchFor(
+            JvSpecComDataSource source, WordPress.WordPressClient wp, CancellationToken ct)
+        {
+            try
+            {
+                source.Initialize(AppConfig.JvLinkSoftwareId);
+                await new RaceResultService(source, wp, AppConfig.RealtimePollInterval)
+                    .RunWatchLoopAsync(realtimeDataSpec: "0B12", key: "", ct);
+            }
+            catch (Exception ex) when (!(ex is OperationCanceledException))
+            {
+                Console.WriteLine($"[{source.SourceName}] 監視失敗（このソースのみスキップ）: {ex.Message}");
             }
         }
     }
