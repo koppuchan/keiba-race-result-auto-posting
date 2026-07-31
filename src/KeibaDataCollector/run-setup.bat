@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >nul
 REM 初回のみ実行: JV-Link/UmaConnの利用キー登録ダイアログを開く。
 REM WordPressの認証情報は不要（setupモードはWordPressに一切接続しない）。
 
