@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >nul
 REM 朝一バッチ: 当日の出走表を取得しWordPressへ反映する。
 
 cd /d "%~dp0"

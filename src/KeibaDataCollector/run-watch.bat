@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >nul
 REM レース確定監視: 結果・払戻を随時WordPressへ反映する（開催時間帯に起動しておく）。
 REM 停止するには Ctrl+C を押してください。
 
