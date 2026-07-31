@@ -1,7 +1,9 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using KeibaDataCollector.Interop;
+using KeibaDataCollector.Models;
 using KeibaDataCollector.WordPress;
 
 namespace KeibaDataCollector.Services
@@ -15,6 +17,10 @@ namespace KeibaDataCollector.Services
         private readonly WordPressClient _wp;
         private readonly TimeSpan _pollInterval;
 
+        // レースキーごとに結果を積み上げるバッファ。SE/HR/RAレコードが個別に届くたび、
+        // このレースの最新状態でWordPressへ再送する（Eventually Consistentな即時反映）。
+        private readonly Dictionary<string, RaceResult> _buffers = new Dictionary<string, RaceResult>();
+
         public RaceResultService(IRaceDataSource source, WordPressClient wp, TimeSpan pollInterval)
         {
             _source = source;
@@ -24,8 +30,8 @@ namespace KeibaDataCollector.Services
 
         public async Task RunWatchLoopAsync(string realtimeDataSpec, string key, CancellationToken ct)
         {
-            // realtimeDataSpec: 確定成績/払戻に対応するリアルタイム系データ種別コード。
-            // JV-Data仕様書の「リアルタイム系データ種別」一覧で正確な値を確認して差し替える。
+            // realtimeDataSpec: JV-Linkインターフェース仕様書「JVRTOpen」記載の対応表で確認済み。
+            // 払戻確定="0B12"（本サービスが監視する対象）。
             int rc = _source.OpenRealtime(realtimeDataSpec, key);
             if (rc != 0)
                 throw new InvalidOperationException($"{_source.SourceName} OpenRealtime failed: {rc}");
@@ -37,10 +43,7 @@ namespace KeibaDataCollector.Services
                     int size = _source.Read(out var buffer, out _);
                     if (size > 0)
                     {
-                        var recordType = JvRecordParser.GetRecordTypeId(buffer);
-                        // TODO: recordType "SE"（着順確定後）/ "HR"（払戻）をパースし、
-                        // RaceResultへ集約してから _wp.PublishRaceResultAsync を呼ぶ。
-                        Console.WriteLine($"[{_source.SourceName}] realtime record type={recordType} size={size}（パース未実装）");
+                        await HandleRecordAsync(buffer);
                     }
 
                     await Task.Delay(_pollInterval, ct);
@@ -50,6 +53,57 @@ namespace KeibaDataCollector.Services
             {
                 _source.Close();
             }
+        }
+
+        private async Task HandleRecordAsync(string buffer)
+        {
+            var recordType = JvRecordParser.GetRecordTypeId(buffer);
+            switch (recordType)
+            {
+                case "SE":
+                {
+                    var (raceKey, entry) = JvRecordParser.ParseRaceResult(buffer);
+                    var result = GetOrCreate(raceKey);
+                    result.Entries.RemoveAll(e => e.Umaban == entry.Umaban);
+                    result.Entries.Add(entry);
+                    result.Entries.Sort((a, b) => a.Umaban.CompareTo(b.Umaban));
+                    await _wp.PublishRaceResultAsync(result);
+                    Console.WriteLine($"[{_source.SourceName}] {raceKey.AsSlug()} 馬番{entry.Umaban} 着順反映");
+                    break;
+                }
+                case "HR":
+                {
+                    var (raceKey, payouts) = JvRecordParser.ParsePayouts(buffer);
+                    var result = GetOrCreate(raceKey);
+                    result.Payouts = payouts;
+                    await _wp.PublishRaceResultAsync(result);
+                    Console.WriteLine($"[{_source.SourceName}] {raceKey.AsSlug()} 払戻 {payouts.Count}件 反映");
+                    break;
+                }
+                case "RA":
+                {
+                    var (raceKey, cornerPassage) = JvRecordParser.ParseCornerPassage(buffer);
+                    var result = GetOrCreate(raceKey);
+                    result.CornerPassage = cornerPassage;
+                    await _wp.PublishRaceResultAsync(result);
+                    Console.WriteLine($"[{_source.SourceName}] {raceKey.AsSlug()} コーナー通過順位 反映");
+                    break;
+                }
+                default:
+                    Console.WriteLine($"[{_source.SourceName}] realtime record type={recordType}（対象外レコード、無視）");
+                    break;
+            }
+        }
+
+        private RaceResult GetOrCreate(RaceKey key)
+        {
+            var slug = key.AsSlug();
+            if (!_buffers.TryGetValue(slug, out var result))
+            {
+                result = new RaceResult { Key = key };
+                _buffers[slug] = result;
+            }
+            return result;
         }
     }
 }

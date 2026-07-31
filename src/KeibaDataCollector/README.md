@@ -16,24 +16,30 @@ WordPressへ自動反映するWindows常駐アプリの土台。
 
 1. ~~**UmaConnの正確なProgID**~~ → 実機のレジストリで確認済み: `NVDTLabLib.NVLink`（`App.config`反映済み）。
    `setup`コマンドでUmaConn側のダイアログも開くことを確認済み。
-1b. ~~**メソッド名のプレフィックス**~~ → 実機で `New-Object -ComObject` + `Get-Member`により、
-    JV-LinkとUmaConnは同じメソッド一覧を `JV*`/`NV*` のプレフィックス違いで持つことを確認済み
-    （`JvSpecComDataSource`にmethodPrefix引数として反映済み）。
-2. **JVOpen / JVRead 等の引数の正確な型・並び順**
-   - `JvSpecComDataSource.cs` 内のコメントに記載した想定シグネチャは、コミュニティで広く使われている
-     一般的な形ですが、公式のJV-Link/UmaConnインターフェース仕様書で最終確認してください。
-3. **レコードのバイトレベルパース**（`Interop/JvRecordParser.cs`）
-   - 意図的に未実装にしてあります。理由: 着順・払戻金額など実際の金銭に関わる数値を、
-     未検証のオフセットで実装すると本番サイトに誤情報を出すリスクがあるため。
-   - JRA-VAN公式SDKに含まれる `JVData_Struct.cs`（レコード構造体定義、C#版あり）を共有いただければ、
-     このファイルに実際のマッピングを実装します。UmaConn側も同様の構造体定義があるはずです。
-4. **リアルタイム系データ種別コード**（`Program.cs` 内の `"0B12"` は仮置き）
-   - 速報オッズ／中間成績／確定成績／払戻等でコードが分かれています。JV-Data仕様書の
-     「リアルタイム系データ種別一覧」で、確定成績・払戻に対応するコードに差し替えてください。
-5. **JVSetServiceKey の要否**
-   - JV-Link/UmaConnは`JVSetUIProperties`（`setup`モードで呼び出し）による初回GUI設定で
-     利用キーを保存する方式が一般的です。コード側で明示的にキーを渡す必要があるかは
-     実機で`setup`を一度実行して確認してください。
+2. ~~**メソッド名のプレフィックス**~~ → 実機で `New-Object -ComObject` + `Get-Member`により、
+   JV-LinkとUmaConnは同じメソッド一覧を `JV*`/`NV*` のプレフィックス違いで持つことを確認済み
+   （`JvSpecComDataSource`にmethodPrefix引数として反映済み）。
+3. ~~**JVOpen / JVRead 等の引数の正確な型・並び順**~~ → JRA-VAN公式のJV-Linkインターフェース仕様書
+   （`JV-Linkインターフェース仕様書_4.9.0.1(Win).pdf`）で確認済み。既存の実装のシグネチャと一致。
+4. ~~**レコードのバイトレベルパース**~~ → JRA-VAN公式SDKの `JVData_Struct.cs` を入手し
+   `Interop/JvDataSdk/JVData_Struct.cs` に配置、`JvRecordParser` から `SetDataB()` を呼ぶ形で実装済み。
+   `RaceCardService`/`RaceResultService` から `WordPressClient` への配線も完了。
+   **残課題**: `ChakusaCD`（着差コード、数値）をハナ/クビ/アタマ等の表示文字列に変換するコード表が
+   未確認（SDK同梱ドキュメントには見当たらず）。現状は生コードをそのまま`ChakusaText`に出している。
+5. ~~**リアルタイム系データ種別コード**~~ → JV-Linkインターフェース仕様書「JVRTOpen」の対応表で確認済み。
+   払戻確定＝`0B12`で、既存の仮実装の値がそのまま正しかった。
+6. **JVSetServiceKey の要否** → 実機で`JVSetUIProperties`（`setup`）による利用キー登録が成功したため、
+   通常はこちらの方式のみで運用可能と思われる（`JVSetServiceKey`を明示的に呼ぶ実装は現状なし）。
+
+## 実機での既知の問題と対応
+
+- **JRA-VAN利用キーは1台のPCにしか紐付けられない**（データラボサービスの仕様）。
+  複数PCで同じ利用キーを使うと「認証エラー：この利用キーは既に使用されています」となる。
+  発生した場合は JRA-VAN Data Lab.のマイページで利用キーの再発行が必要（該当PCのJV-Link
+  アンインストール→再インストールも必要になる場合がある）。
+- Windowsの「システムロケール」（Unicode対応をしていないプログラムの言語）が日本語でないと、
+  JV-Linkのネイティブダイアログが文字化けする。`intl.cpl` → 管理タブ → システムロケールの変更 →
+  日本語（日本）に変更し、PC再起動が必要。
 
 ## WordPress側で別途必要な準備
 
