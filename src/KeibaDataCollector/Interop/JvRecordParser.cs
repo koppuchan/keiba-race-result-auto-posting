@@ -23,9 +23,19 @@ namespace KeibaDataCollector.Interop
             return rawRecord.Substring(0, 2);
         }
 
+        // ★診断用: 最初の1件だけ、SEレコードの生の中身(先頭76文字=RECORD_ID+RACE_ID+Wakuban+
+        // Umaban+KettoNum+Bameiの範囲)をHEXダンプする。バイト位置ズレの切り分け用。
+        private static bool _seDebugLogged;
+
         /// <summary>"SE"レコード（馬毎レース情報）を朝一の出走表項目としてパースする。</summary>
         public static (RaceKey Key, RaceCardEntry Entry) ParseRaceCard(string rawRecord)
         {
+            if (!_seDebugLogged)
+            {
+                _seDebugLogged = true;
+                DumpSeRecordDebug(rawRecord);
+            }
+
             var se = new JV_SE_RACE_UMA();
             se.SetDataB(ref rawRecord);
 
@@ -109,6 +119,19 @@ namespace KeibaDataCollector.Interop
             }
 
             return (ExtractRaceKey(ra.id), passage);
+        }
+
+        private static void DumpSeRecordDebug(string rawRecord)
+        {
+            Console.WriteLine($"SE診断: 文字列長={rawRecord.Length}（期待値555）");
+
+            var len = Math.Min(80, rawRecord.Length);
+            var hexBuilder = new System.Text.StringBuilder();
+            for (int i = 0; i < len; i++)
+                hexBuilder.Append(((int)rawRecord[i]).ToString("X2")).Append(' ');
+
+            Console.WriteLine($"SE診断: 先頭{len}文字のHEX=[{hexBuilder}]");
+            Console.WriteLine($"SE診断: 先頭{len}文字のそのまま表示=[{rawRecord.Substring(0, len)}]");
         }
 
         private static RaceKey ExtractRaceKey(RACE_ID id)
