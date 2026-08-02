@@ -54,7 +54,15 @@ namespace KeibaDataCollector.Services
             {
                 int size = _source.Read(out var buffer, out _);
                 if (size == 0) break;
-                if (size < 0) continue; // ファイル切り替わり等の制御コード
+                if (size == -1) continue; // ファイル切り替わり（正常、JVRead仕様書より）
+                if (size == -3)
+                {
+                    // ファイルダウンロード中（JVRead仕様書より）。busyループにならないよう少し待つ。
+                    System.Threading.Thread.Sleep(500);
+                    continue;
+                }
+                if (size < 0)
+                    throw new InvalidOperationException($"{_source.SourceName} Read failed: {size}");
                 totalRecords++;
 
                 var typeId = JvRecordParser.GetRecordTypeId(buffer);
