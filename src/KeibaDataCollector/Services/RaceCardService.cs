@@ -44,17 +44,27 @@ namespace KeibaDataCollector.Services
             var entriesByRace = new Dictionary<string, List<RaceCardEntry>>();
             var raceKeys = new Dictionary<string, RaceKey>();
 
+            int totalRecords = 0;
+            int seRecords = 0;
+            var otherDates = new HashSet<string>();
+
             while (true)
             {
                 int size = _source.Read(out var buffer, out _);
                 if (size == 0) break;
                 if (size < 0) continue; // ファイル切り替わり等の制御コード
+                totalRecords++;
 
                 if (JvRecordParser.GetRecordTypeId(buffer) != "SE") continue;
+                seRecords++;
 
                 var (raceKey, entry) = JvRecordParser.ParseRaceCard(buffer);
                 // option=2は「今週データ」全体を返しうるため、朝一バッチの対象日以外は捨てる。
-                if (raceKey.RaceDate.Date != targetDate.Date) continue;
+                if (raceKey.RaceDate.Date != targetDate.Date)
+                {
+                    otherDates.Add(raceKey.RaceDate.ToString("yyyy-MM-dd"));
+                    continue;
+                }
 
                 var slug = raceKey.AsSlug();
                 if (!entriesByRace.TryGetValue(slug, out var list))
@@ -66,6 +76,10 @@ namespace KeibaDataCollector.Services
                 list.Add(entry);
             }
             _source.Close();
+
+            Console.WriteLine(
+                $"[{_source.SourceName}] 診断: 全レコード{totalRecords}件, SEレコード{seRecords}件, " +
+                $"対象日({targetDate:yyyy-MM-dd})以外の日付={string.Join(",", otherDates)}");
 
             foreach (var slug in entriesByRace.Keys)
             {
