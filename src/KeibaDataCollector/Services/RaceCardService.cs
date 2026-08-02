@@ -18,12 +18,18 @@ namespace KeibaDataCollector.Services
             _wp = wp;
         }
 
+        // option=2(今週データ)は「直近の未来のレースに関するデータ」に取得範囲をサーバー側で
+        // 絞ってくれるため、fromtimeは実際の対象範囲決定には使われない（更新差分の再開用途）。
+        // 出馬表は開催日より前（火・水曜等）に公開されるため、fromtimeを「今日0時」にすると
+        // 「今日0時以降に新規提供されたデータ」しか拾えず、既に公開済みの当日レース分を
+        // 取りこぼす。そのため十分に過去の固定値を指定し、option=2の範囲を丸ごと取得する。
+        private const string EarlyAnchorFromTime = "19860101000000";
+
         public void RunMorningBatch(DateTime targetDate, string trackCode)
         {
             // dataspec "RACE" は番組表系レコードを想定。JV-Linkインターフェース仕様書のJVOpen
             // option早見表(option=2:今週データ)で dataspec="RACE" 指定可であることを確認済み。
-            var fromTime = targetDate.ToString("yyyyMMdd") + "000000";
-            var open = _source.Open("RACE", fromTime, DataOption.ThisWeekAndToday);
+            var open = _source.Open("RACE", EarlyAnchorFromTime, DataOption.ThisWeekAndToday);
             if (open.ReturnCode == -1)
             {
                 // JV-Linkインターフェース仕様書のコード表より: -1は「該当データ無し」であり異常ではない
@@ -47,6 +53,9 @@ namespace KeibaDataCollector.Services
                 if (JvRecordParser.GetRecordTypeId(buffer) != "SE") continue;
 
                 var (raceKey, entry) = JvRecordParser.ParseRaceCard(buffer);
+                // option=2は「今週データ」全体を返しうるため、朝一バッチの対象日以外は捨てる。
+                if (raceKey.RaceDate.Date != targetDate.Date) continue;
+
                 var slug = raceKey.AsSlug();
                 if (!entriesByRace.TryGetValue(slug, out var list))
                 {
