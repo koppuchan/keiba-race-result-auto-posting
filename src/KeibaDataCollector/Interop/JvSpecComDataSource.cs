@@ -89,51 +89,27 @@ namespace KeibaDataCollector.Interop
             };
         }
 
-        // ★診断用: 呼び出し1回目だけ、out引数の書き戻しが実際に効いているかログに出す。
-        private bool _readDebugLogged;
+        private const int ReadBufferSize = 110000;
 
         public int Read(out string buffer, out string fileName)
         {
-            // JVRead/NVRead(out string buff, in long size, out string filename)
-            // buff/filenameはout引数のためByRefでのInvokeが必要（Open同様、実機で確認済みの問題）。
-            var args = new object[] { string.Empty, 110000, string.Empty };
-            int rc = (int)InvokeByRef("Read", args, isByRef: new[] { true, false, true });
+            // JVGets/NVGets(out byte[] buff, in long size, out string filename) を使う。
+            // JVRead/NVRead（string版）は、実機で検証した結果、後期バインドのByRef文字列
+            // マーシャリングでShift-JISバイト列が壊れる問題が確認された（BSTR化の過程で
+            // 元のバイトが失われ、事後的な文字コード変換では復元できないケースがあった）。
+            // JV-Linkインターフェース仕様書に「JVGetsはSJISをSJISのまま渡すことにより、
+            // JV-Link内部での変換およびアプリケーション側でのUNICODE→SJIS変換が不要になり
+            // コード変換におけるオーバーヘッドがなくなりました」と明記されている通り、
+            // バイト配列で直接受け取ることで文字コード変換の問題自体を回避する。
+            var args = new object[] { new byte[ReadBufferSize], ReadBufferSize, string.Empty };
+            int rc = (int)InvokeByRef("Gets", args, isByRef: new[] { true, false, true });
 
-            if (!_readDebugLogged)
-            {
-                _readDebugLogged = true;
-                var arg0Str = args[0] as string;
-                var preview = arg0Str == null ? "(not a string)" : arg0Str.Substring(0, Math.Min(50, arg0Str.Length));
-                Console.WriteLine(
-                    $"[{SourceName}] Read診断: rc={rc}, " +
-                    $"args[0]の型={args[0]?.GetType()?.FullName ?? "null"}, args[0]の長さ={arg0Str?.Length ?? -1}, " +
-                    $"args[0]の内容(先頭50文字)=[{preview}], " +
-                    $"args[1]の型={args[1]?.GetType()?.FullName ?? "null"}, args[1]の値={args[1]}, " +
-                    $"args[2]の型={args[2]?.GetType()?.FullName ?? "null"}, args[2]の値={args[2]}");
-            }
-
-            // COMから返るbuffは「各バイト値をそのまま1文字として詰めた生バイト列」であり、
-            // JVData_Struct.cs（SetDataB内でShift_JISとしてGetBytes()し直す前提）はこの生バイト列を
-            // 一度Shift_JISとして正しくデコードした文字列を渡される想定になっている。
-            // 実機で確認: このデコードをせずSetDataBに渡すと全角文字を含むフィールド以降が
-            // バイト位置ズレを起こし文字化けする。
-            buffer = DecodeRawComString(args[0] as string);
+            var rawBytes = args[0] as byte[];
+            buffer = (rawBytes != null && rc > 0)
+                ? Encoding.GetEncoding("Shift_JIS").GetString(rawBytes, 0, rc)
+                : string.Empty;
             fileName = args[2] as string ?? string.Empty;
             return rc;
-        }
-
-        // 実機で確認: システムロケールはja-JPで正しいにもかかわらず文字化けが発生し、その文字化け
-        // パターン（例: "ƒ"）はWindows-1252（西欧）でのバイト0x83の表示と一致した。
-        // これは、後期バインドのCOM ByRef文字列マーシャリングが、元のShift-JISバイト列を
-        // （システムロケールに関わらず）Windows-1252として解釈してBSTR化していることを示唆する。
-        // そのため、まずWindows-1252として元のバイト列に戻し、そのバイト列をShift-JISとして
-        // 正しく解釈し直す。
-        private static string DecodeRawComString(string comMarshaledString)
-        {
-            if (string.IsNullOrEmpty(comMarshaledString)) return string.Empty;
-
-            var originalBytes = Encoding.GetEncoding(1252).GetBytes(comMarshaledString);
-            return Encoding.GetEncoding("Shift_JIS").GetString(originalBytes);
         }
 
         public int OpenRealtime(string dataSpec, string key)
