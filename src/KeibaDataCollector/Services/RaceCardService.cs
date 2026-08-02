@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using KeibaDataCollector.Interop;
 using KeibaDataCollector.Models;
 using KeibaDataCollector.WordPress;
@@ -47,6 +48,7 @@ namespace KeibaDataCollector.Services
             int totalRecords = 0;
             int seRecords = 0;
             var otherDates = new HashSet<string>();
+            var typeCounts = new Dictionary<string, int>();
 
             while (true)
             {
@@ -55,7 +57,10 @@ namespace KeibaDataCollector.Services
                 if (size < 0) continue; // ファイル切り替わり等の制御コード
                 totalRecords++;
 
-                if (JvRecordParser.GetRecordTypeId(buffer) != "SE") continue;
+                var typeId = JvRecordParser.GetRecordTypeId(buffer);
+                typeCounts[typeId] = typeCounts.TryGetValue(typeId, out var c) ? c + 1 : 1;
+
+                if (typeId != "SE") continue;
                 seRecords++;
 
                 var (raceKey, entry) = JvRecordParser.ParseRaceCard(buffer);
@@ -77,9 +82,11 @@ namespace KeibaDataCollector.Services
             }
             _source.Close();
 
+            var typeBreakdown = string.Join(", ", typeCounts.OrderByDescending(kv => kv.Value).Select(kv => $"{kv.Key}:{kv.Value}"));
             Console.WriteLine(
                 $"[{_source.SourceName}] 診断: 全レコード{totalRecords}件, SEレコード{seRecords}件, " +
-                $"対象日({targetDate:yyyy-MM-dd})以外の日付={string.Join(",", otherDates)}");
+                $"対象日({targetDate:yyyy-MM-dd})以外の日付={string.Join(",", otherDates)}, " +
+                $"種別内訳=[{typeBreakdown}]");
 
             foreach (var slug in entriesByRace.Keys)
             {
