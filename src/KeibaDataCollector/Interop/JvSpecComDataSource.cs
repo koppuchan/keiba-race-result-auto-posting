@@ -122,15 +122,18 @@ namespace KeibaDataCollector.Interop
             return rc;
         }
 
-        private static string DecodeRawComString(string rawByteString)
+        // 実機で確認: システムロケールはja-JPで正しいにもかかわらず文字化けが発生し、その文字化け
+        // パターン（例: "ƒ"）はWindows-1252（西欧）でのバイト0x83の表示と一致した。
+        // これは、後期バインドのCOM ByRef文字列マーシャリングが、元のShift-JISバイト列を
+        // （システムロケールに関わらず）Windows-1252として解釈してBSTR化していることを示唆する。
+        // そのため、まずWindows-1252として元のバイト列に戻し、そのバイト列をShift-JISとして
+        // 正しく解釈し直す。
+        private static string DecodeRawComString(string comMarshaledString)
         {
-            if (string.IsNullOrEmpty(rawByteString)) return string.Empty;
+            if (string.IsNullOrEmpty(comMarshaledString)) return string.Empty;
 
-            var bytes = new byte[rawByteString.Length];
-            for (int i = 0; i < rawByteString.Length; i++)
-                bytes[i] = unchecked((byte)rawByteString[i]);
-
-            return Encoding.GetEncoding("Shift_JIS").GetString(bytes);
+            var originalBytes = Encoding.GetEncoding(1252).GetBytes(comMarshaledString);
+            return Encoding.GetEncoding("Shift_JIS").GetString(originalBytes);
         }
 
         public int OpenRealtime(string dataSpec, string key)
