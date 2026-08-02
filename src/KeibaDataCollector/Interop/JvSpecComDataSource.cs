@@ -1,6 +1,7 @@
 using System;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace KeibaDataCollector.Interop
 {
@@ -111,9 +112,25 @@ namespace KeibaDataCollector.Interop
                     $"args[2]の型={args[2]?.GetType()?.FullName ?? "null"}, args[2]の値={args[2]}");
             }
 
-            buffer = args[0] as string ?? string.Empty;
+            // COMから返るbuffは「各バイト値をそのまま1文字として詰めた生バイト列」であり、
+            // JVData_Struct.cs（SetDataB内でShift_JISとしてGetBytes()し直す前提）はこの生バイト列を
+            // 一度Shift_JISとして正しくデコードした文字列を渡される想定になっている。
+            // 実機で確認: このデコードをせずSetDataBに渡すと全角文字を含むフィールド以降が
+            // バイト位置ズレを起こし文字化けする。
+            buffer = DecodeRawComString(args[0] as string);
             fileName = args[2] as string ?? string.Empty;
             return rc;
+        }
+
+        private static string DecodeRawComString(string rawByteString)
+        {
+            if (string.IsNullOrEmpty(rawByteString)) return string.Empty;
+
+            var bytes = new byte[rawByteString.Length];
+            for (int i = 0; i < rawByteString.Length; i++)
+                bytes[i] = unchecked((byte)rawByteString[i]);
+
+            return Encoding.GetEncoding("Shift_JIS").GetString(bytes);
         }
 
         public int OpenRealtime(string dataSpec, string key)
