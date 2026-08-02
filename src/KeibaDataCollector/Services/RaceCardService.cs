@@ -24,6 +24,14 @@ namespace KeibaDataCollector.Services
             // option早見表(option=2:今週データ)で dataspec="RACE" 指定可であることを確認済み。
             var fromTime = targetDate.ToString("yyyyMMdd") + "000000";
             var open = _source.Open("RACE", fromTime, DataOption.ThisWeekAndToday);
+            if (open.ReturnCode == -1)
+            {
+                // JV-Linkインターフェース仕様書のコード表より: -1は「該当データ無し」であり異常ではない
+                // （指定期間に開催が無い等）。JVCloseを呼んで正常終了する。
+                _source.Close();
+                Console.WriteLine($"[{_source.SourceName}] {targetDate:yyyy-MM-dd} 該当データなし（開催が無い等）。");
+                return;
+            }
             if (open.ReturnCode < 0)
                 throw new InvalidOperationException($"{_source.SourceName} Open failed: {open.ReturnCode}");
 
