@@ -74,9 +74,10 @@ namespace KeibaDataCollector.Interop
         {
             // JVOpen/NVOpen(string dataspec, string fromtime, int option,
             //        out int readcount, out int downloadcount, out string lastfiletimestamp)
-            // 引数の正確な型・並び順はJV-Link/UmaConn仕様書で要確認。
+            // readcount/downloadcount/lastfiletimestampはout引数のため、ByRefでのInvokeが必要
+            // （実機で確認: ByRef指定なしだと書き戻しが行われず常に呼び出し前の値のまま）。
             var args = new object[] { dataSpec, fromTime, (int)option, 0, 0, "" };
-            int rc = (int)Invoke("Open", args);
+            int rc = (int)InvokeByRef("Open", args, isByRef: new[] { false, false, false, true, true, true });
 
             return new OpenResult
             {
@@ -92,9 +93,10 @@ namespace KeibaDataCollector.Interop
 
         public int Read(out string buffer, out string fileName)
         {
-            // JVRead/NVRead(out string buff, out int size, out string filename)
+            // JVRead/NVRead(out string buff, in long size, out string filename)
+            // buff/filenameはout引数のためByRefでのInvokeが必要（Open同様、実機で確認済みの問題）。
             var args = new object[] { string.Empty, 110000, string.Empty };
-            int rc = (int)Invoke("Read", args);
+            int rc = (int)InvokeByRef("Read", args, isByRef: new[] { true, false, true });
 
             if (!_readDebugLogged)
             {
@@ -152,6 +154,29 @@ namespace KeibaDataCollector.Interop
                 null,
                 _com,
                 args);
+        }
+
+        /// <summary>
+        /// out引数を含むCOMメソッド用。Type.InvokeMemberは既定ではByRef引数の書き戻しを保証しないため
+        /// （実機で確認: JVOpen/JVReadのout引数が常に空/初期値のまま返ってきた）、
+        /// ParameterModifierで明示的にByRefを指定して呼び出す。呼び出し後、argsの該当要素が更新される。
+        /// </summary>
+        private object InvokeByRef(string methodSuffix, object[] args, bool[] isByRef)
+        {
+            var method = _methodPrefix + methodSuffix;
+            var modifier = new ParameterModifier(args.Length);
+            for (int i = 0; i < args.Length; i++)
+                modifier[i] = isByRef[i];
+
+            return _type.InvokeMember(
+                method,
+                BindingFlags.InvokeMethod,
+                Type.DefaultBinder,
+                _com,
+                args,
+                new[] { modifier },
+                null,
+                null);
         }
 
         private static int SafeInt(object value) => value is int i ? i : 0;
