@@ -32,7 +32,19 @@ namespace KeibaDataCollector.Services
         {
             // realtimeDataSpec: JV-Linkインターフェース仕様書「JVRTOpen」記載の対応表で確認済み。
             // 払戻確定="0B12"（本サービスが監視する対象）。
+            // ★TODO: 仕様書によると"0B12"のkeyは「レース単位」("YYYYMMDDJJKKHHRR"等)が必須で、
+            // 日付単位・空文字は想定されていない。現状 key="" で呼んでいるため恒常的に失敗する見込み。
+            // 本来はJVWatchEvent（COMイベント）で払戻確定イベントを受け取り、そのイベントが返す
+            // レースキーでJVRTOpenする設計だが、後期バインドではCOMイベント購読ができないため、
+            // 朝一バッチで取得した当日のレース一覧を使い、レースごとに個別ポーリングする方式へ
+            // 改修する必要がある。
             int rc = _source.OpenRealtime(realtimeDataSpec, key);
+            if (rc == -1)
+            {
+                // JV-Linkインターフェース仕様書のコード表より: -1は「該当データ無し」であり異常ではない。
+                Console.WriteLine($"[{_source.SourceName}] realtime該当データなし（key='{key}'）。");
+                return;
+            }
             if (rc != 0)
                 throw new InvalidOperationException($"{_source.SourceName} OpenRealtime failed: {rc}");
 
