@@ -71,7 +71,21 @@ namespace KeibaDataCollector.Services
                 if (typeId != "SE") continue;
                 seRecords++;
 
-                var (raceKey, entry) = JvRecordParser.ParseRaceCard(buffer);
+                RaceKey raceKey;
+                RaceCardEntry entry;
+                try
+                {
+                    (raceKey, entry) = JvRecordParser.ParseRaceCard(buffer);
+                }
+                catch (Exception ex)
+                {
+                    // 1レコードのパース失敗で情報源全体を止めない。原因調査用に文字列長も残す。
+                    Console.WriteLine(
+                        $"[{_source.SourceName}] SEレコードのパース失敗（このレコードのみスキップ）: " +
+                        $"生文字列長={buffer.Length}, エラー={ex.Message}");
+                    continue;
+                }
+
                 // option=2は「今週データ」全体を返しうるため、朝一バッチの対象日以外は捨てる。
                 if (raceKey.RaceDate.Date != targetDate.Date)
                 {
