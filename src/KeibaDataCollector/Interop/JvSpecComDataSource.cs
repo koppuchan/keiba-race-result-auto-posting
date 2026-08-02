@@ -87,11 +87,28 @@ namespace KeibaDataCollector.Interop
             };
         }
 
+        // ★診断用: 呼び出し1回目だけ、out引数の書き戻しが実際に効いているかログに出す。
+        private bool _readDebugLogged;
+
         public int Read(out string buffer, out string fileName)
         {
             // JVRead/NVRead(out string buff, out int size, out string filename)
             var args = new object[] { string.Empty, 110000, string.Empty };
             int rc = (int)Invoke("Read", args);
+
+            if (!_readDebugLogged)
+            {
+                _readDebugLogged = true;
+                var arg0Str = args[0] as string;
+                var preview = arg0Str == null ? "(not a string)" : arg0Str.Substring(0, Math.Min(50, arg0Str.Length));
+                Console.WriteLine(
+                    $"[{SourceName}] Read診断: rc={rc}, " +
+                    $"args[0]の型={args[0]?.GetType()?.FullName ?? "null"}, args[0]の長さ={arg0Str?.Length ?? -1}, " +
+                    $"args[0]の内容(先頭50文字)=[{preview}], " +
+                    $"args[1]の型={args[1]?.GetType()?.FullName ?? "null"}, args[1]の値={args[1]}, " +
+                    $"args[2]の型={args[2]?.GetType()?.FullName ?? "null"}, args[2]の値={args[2]}");
+            }
+
             buffer = args[0] as string ?? string.Empty;
             fileName = args[2] as string ?? string.Empty;
             return rc;
