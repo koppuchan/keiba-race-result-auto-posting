@@ -46,6 +46,39 @@ namespace KeibaDataCollector.Interop
             int rc = (int)Invoke("Init", softwareId);
             if (rc < 0)
                 throw new InvalidOperationException($"{SourceName} {_methodPrefix}Init failed: {rc}");
+
+            SuppressPayoutDialog();
+        }
+
+        /// <summary>
+        /// 払戻ダイアログを表示しないようにする（払戻フラグ = 1:表示しない）。
+        ///
+        /// タスクスケジューラからの無人実行では、モーダルダイアログが出るとユーザー操作待ちで
+        /// プロセスが止まり、以降の取得が全て停止してしまうため明示的に抑止する。
+        ///
+        /// 実機のCOM型情報を確認して判明した点:
+        ///   m_payflag は読み取り専用プロパティ（int m_payflag() {get}）で代入できない。
+        ///   設定には JVSetPayFlag(int) / NVSetPayFlag(int) メソッドを使う
+        ///   （JVSetSaveFlag と同じ形。JV-Link/UmaConn 双方に存在することを確認済み）。
+        ///
+        /// この設定はレジストリに保存され、setupダイアログの「払戻連絡を表示する」の
+        /// チェックを外すのと同じ効果を持つ。
+        /// なお「JRA-VANからのお知らせ」の表示有無は別設定のため、setupダイアログ側で
+        /// オフにする必要がある。
+        /// </summary>
+        private void SuppressPayoutDialog()
+        {
+            try
+            {
+                int rc = (int)Invoke("SetPayFlag", 1);
+                if (rc != 0)
+                    Console.WriteLine($"[{SourceName}] 払戻ダイアログ抑止に失敗（続行）: rc={rc}");
+            }
+            catch (Exception ex)
+            {
+                // このメソッドが無い実装でもデータ取得自体は続行できるため、警告に留める。
+                Console.WriteLine($"[{SourceName}] 払戻ダイアログ抑止の呼び出しに失敗（続行）: {ex.Message}");
+            }
         }
 
         public void RunInteractiveSetup()

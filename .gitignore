@@ -5,6 +5,9 @@ obj/
 secrets.local.bat
 .env
 
+# タスクスケジューラ実行時のログ（scheduled-*.bat が日付ごとに出力する）
+logs/
+
 # JRA-VAN公式SDK配布物一式（インストーラ・ドキュメント・サンプル等）。
 # ライセンス上、必要なファイル（JVData_Struct.cs）だけを
 # src/KeibaDataCollector/Interop/JvDataSdk/ に配置してそちらをコミット対象にする。
