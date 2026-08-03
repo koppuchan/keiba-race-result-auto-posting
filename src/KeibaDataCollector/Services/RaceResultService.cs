@@ -10,9 +10,17 @@ namespace KeibaDataCollector.Services
 {
     /// <summary>
     /// 確定後リアルタイム: レース確定検知〜結果・払戻の取得〜WordPress即時反映をポーリングで回す。
+    ///
+    /// JVRTOpenの"0B12"（払戻確定）は、公式にはJVWatchEvent（COMイベント）が返すレース単位の
+    /// キー（"YYYYMMDDJJRR"）で呼ぶ設計だが、後期バインドではCOMイベントを購読できないため、
+    /// 朝一相当のクエリで当日のレース一覧を先に取得し、レースごとに個別ポーリングする方式にしている。
     /// </summary>
     public class RaceResultService
     {
+        // option=2(今週データ)はサーバー側で対象範囲を絞ってくれるため、fromtimeは十分に古い
+        // 固定値にする（RaceCardServiceと同じ理由）。
+        private const string EarlyAnchorFromTime = "19860101000000";
+
         private readonly IRaceDataSource _source;
         private readonly WordPressClient _wp;
         private readonly TimeSpan _pollInterval;
@@ -28,83 +36,155 @@ namespace KeibaDataCollector.Services
             _pollInterval = pollInterval;
         }
 
-        public async Task RunWatchLoopAsync(string realtimeDataSpec, string key, CancellationToken ct)
+        public async Task RunWatchLoopAsync(DateTime targetDate, CancellationToken ct)
         {
-            // realtimeDataSpec: JV-Linkインターフェース仕様書「JVRTOpen」記載の対応表で確認済み。
-            // 払戻確定="0B12"（本サービスが監視する対象）。
-            // ★TODO: 仕様書によると"0B12"のkeyは「レース単位」("YYYYMMDDJJKKHHRR"等)が必須で、
-            // 日付単位・空文字は想定されていない。現状 key="" で呼んでいるため恒常的に失敗する見込み。
-            // 本来はJVWatchEvent（COMイベント）で払戻確定イベントを受け取り、そのイベントが返す
-            // レースキーでJVRTOpenする設計だが、後期バインドではCOMイベント購読ができないため、
-            // 朝一バッチで取得した当日のレース一覧を使い、レースごとに個別ポーリングする方式へ
-            // 改修する必要がある。
-            int rc = _source.OpenRealtime(realtimeDataSpec, key);
+            var pending = DiscoverTodaysRaceKeys(targetDate);
+            Console.WriteLine($"[{_source.SourceName}] {targetDate:yyyy-MM-dd} 監視対象レース {pending.Count}件を検出。");
+
+            while (!ct.IsCancellationRequested && pending.Count > 0)
+            {
+                for (int i = pending.Count - 1; i >= 0; i--)
+                {
+                    if (ct.IsCancellationRequested) break;
+
+                    var raceKey = pending[i];
+                    bool confirmed;
+                    try
+                    {
+                        confirmed = await CheckAndPublishRaceAsync(raceKey);
+                    }
+                    catch (Exception ex)
+                    {
+                        // このレースの監視で失敗しても、他のレースの監視は続ける。
+                        Console.WriteLine($"[{_source.SourceName}] {raceKey.AsSlug()} 監視中にエラー（次回リトライ）: {ex.Message}");
+                        confirmed = false;
+                    }
+
+                    if (confirmed)
+                    {
+                        Console.WriteLine($"[{_source.SourceName}] {raceKey.AsSlug()} 払戻確定・反映完了。監視対象から除外。");
+                        pending.RemoveAt(i);
+                    }
+                }
+
+                if (pending.Count > 0)
+                    await Task.Delay(_pollInterval, ct);
+            }
+
+            Console.WriteLine($"[{_source.SourceName}] {targetDate:yyyy-MM-dd} 監視終了（全レース確定、またはキャンセル）。");
+        }
+
+        /// <summary>指定レースの払戻確定状況をJVRTOpen("0B12", レースキー)で確認し、
+        /// データがあれば取得・WordPress反映する。払戻まで取得できたらtrueを返す
+        /// （＝このレースはもう監視不要）。</summary>
+        private async Task<bool> CheckAndPublishRaceAsync(RaceKey raceKey)
+        {
+            int rc = _source.OpenRealtime("0B12", raceKey.AsJvRealtimeKey());
             if (rc == -1)
             {
-                // JV-Linkインターフェース仕様書のコード表より: -1は「該当データ無し」であり異常ではない。
-                Console.WriteLine($"[{_source.SourceName}] realtime該当データなし（key='{key}'）。");
-                return;
+                // JV-Linkインターフェース仕様書のコード表より: -1は「該当データ無し」＝まだ未確定。
+                return false;
             }
             if (rc != 0)
                 throw new InvalidOperationException($"{_source.SourceName} OpenRealtime failed: {rc}");
 
-            try
-            {
-                while (!ct.IsCancellationRequested)
-                {
-                    int size = _source.Read(out var buffer, out _);
-                    if (size > 0)
-                    {
-                        await HandleRecordAsync(buffer);
-                    }
+            var result = GetOrCreate(raceKey);
+            bool gotPayout = false;
 
-                    await Task.Delay(_pollInterval, ct);
+            while (true)
+            {
+                int size = _source.Read(out var buffer, out _);
+                if (size == 0) break;
+                if (size == -1) continue; // ファイル切り替わり（正常）
+                if (size == -3)
+                {
+                    await Task.Delay(500);
+                    continue;
+                }
+                if (size < 0)
+                    throw new InvalidOperationException($"{_source.SourceName} Read failed: {size}");
+
+                switch (JvRecordParser.GetRecordTypeId(buffer))
+                {
+                    case "SE":
+                    {
+                        var (_, entry) = JvRecordParser.ParseRaceResult(buffer);
+                        result.Entries.RemoveAll(e => e.Umaban == entry.Umaban);
+                        result.Entries.Add(entry);
+                        break;
+                    }
+                    case "HR":
+                    {
+                        var (_, payouts) = JvRecordParser.ParsePayouts(buffer);
+                        result.Payouts = payouts;
+                        gotPayout = true;
+                        break;
+                    }
+                    case "RA":
+                    {
+                        var (_, cornerPassage) = JvRecordParser.ParseCornerPassage(buffer);
+                        result.CornerPassage = cornerPassage;
+                        break;
+                    }
                 }
             }
-            finally
-            {
-                _source.Close();
-            }
+            _source.Close();
+
+            result.Entries.Sort((a, b) => a.Umaban.CompareTo(b.Umaban));
+            await _wp.PublishRaceResultAsync(result);
+            Console.WriteLine(
+                $"[{_source.SourceName}] {raceKey.AsSlug()} 反映（着順{result.Entries.Count}件, " +
+                $"払戻{result.Payouts.Count}件, コーナー{result.CornerPassage.Count}件）");
+
+            return gotPayout;
         }
 
-        private async Task HandleRecordAsync(string buffer)
+        /// <summary>朝一バッチと同じ方法で当日のレース一覧（キーのみ）を取得する。
+        /// "RA"レコード（レース詳細、1レース1件）を使うため"SE"より効率的。</summary>
+        private List<RaceKey> DiscoverTodaysRaceKeys(DateTime targetDate)
         {
-            var recordType = JvRecordParser.GetRecordTypeId(buffer);
-            switch (recordType)
+            var open = _source.Open("RACE", EarlyAnchorFromTime, DataOption.ThisWeekAndToday);
+            if (open.ReturnCode == -1)
             {
-                case "SE":
-                {
-                    var (raceKey, entry) = JvRecordParser.ParseRaceResult(buffer);
-                    var result = GetOrCreate(raceKey);
-                    result.Entries.RemoveAll(e => e.Umaban == entry.Umaban);
-                    result.Entries.Add(entry);
-                    result.Entries.Sort((a, b) => a.Umaban.CompareTo(b.Umaban));
-                    await _wp.PublishRaceResultAsync(result);
-                    Console.WriteLine($"[{_source.SourceName}] {raceKey.AsSlug()} 馬番{entry.Umaban} 着順反映");
-                    break;
-                }
-                case "HR":
-                {
-                    var (raceKey, payouts) = JvRecordParser.ParsePayouts(buffer);
-                    var result = GetOrCreate(raceKey);
-                    result.Payouts = payouts;
-                    await _wp.PublishRaceResultAsync(result);
-                    Console.WriteLine($"[{_source.SourceName}] {raceKey.AsSlug()} 払戻 {payouts.Count}件 反映");
-                    break;
-                }
-                case "RA":
-                {
-                    var (raceKey, cornerPassage) = JvRecordParser.ParseCornerPassage(buffer);
-                    var result = GetOrCreate(raceKey);
-                    result.CornerPassage = cornerPassage;
-                    await _wp.PublishRaceResultAsync(result);
-                    Console.WriteLine($"[{_source.SourceName}] {raceKey.AsSlug()} コーナー通過順位 反映");
-                    break;
-                }
-                default:
-                    Console.WriteLine($"[{_source.SourceName}] realtime record type={recordType}（対象外レコード、無視）");
-                    break;
+                _source.Close();
+                return new List<RaceKey>();
             }
+            if (open.ReturnCode < 0)
+                throw new InvalidOperationException($"{_source.SourceName} Open failed: {open.ReturnCode}");
+
+            var keys = new List<RaceKey>();
+            while (true)
+            {
+                int size = _source.Read(out var buffer, out _);
+                if (size == 0) break;
+                if (size == -1) continue;
+                if (size == -3)
+                {
+                    Thread.Sleep(500);
+                    continue;
+                }
+                if (size < 0)
+                    throw new InvalidOperationException($"{_source.SourceName} Read failed: {size}");
+
+                if (JvRecordParser.GetRecordTypeId(buffer) != "RA") continue;
+
+                RaceKey raceKey;
+                try
+                {
+                    (raceKey, _) = JvRecordParser.ParseCornerPassage(buffer);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[{_source.SourceName}] RAレコードのパース失敗（このレコードのみスキップ）: {ex.Message}");
+                    continue;
+                }
+
+                if (raceKey.RaceDate.Date == targetDate.Date)
+                    keys.Add(raceKey);
+            }
+            _source.Close();
+
+            return keys;
         }
 
         private RaceResult GetOrCreate(RaceKey key)

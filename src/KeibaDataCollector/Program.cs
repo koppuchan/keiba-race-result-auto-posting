@@ -46,9 +46,8 @@ namespace KeibaDataCollector
                         {
                             Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
 
-                            // データ種別コード"0B12"(払戻確定)はJV-Linkインターフェース仕様書のJVRTOpen
-                            // 対応表で確認済み。ソースごとに独立してtry/catchし、片方の失敗が
-                            // もう片方の監視を止めないようにする。
+                            // ソースごとに独立してtry/catchし、片方の失敗がもう片方の監視を止めない
+                            // ようにする。
                             var jvResultTask = RunWatchFor(jvLink, wp, cts.Token);
                             var umaResultTask = RunWatchFor(umaConn, wp, cts.Token);
 
@@ -109,7 +108,7 @@ namespace KeibaDataCollector
             {
                 source.Initialize(AppConfig.JvLinkSoftwareId);
                 await new RaceResultService(source, wp, AppConfig.RealtimePollInterval)
-                    .RunWatchLoopAsync(realtimeDataSpec: "0B12", key: "", ct);
+                    .RunWatchLoopAsync(DateTime.Today, ct);
             }
             catch (Exception ex) when (!(ex is OperationCanceledException))
             {

@@ -11,6 +11,10 @@ namespace KeibaDataCollector.Models
         public int RaceNumber { get; set; }
 
         public string AsSlug() => $"{RaceDate:yyyyMMdd}-{TrackCode}-{RaceNumber}R";
+
+        /// <summary>JVRTOpenのkey引数（レース単位）形式。JV-Linkインターフェース仕様書の
+        /// 対応表（払戻確定等のイベントが返すキー）に合わせた"YYYYMMDDJJRR"形式。</summary>
+        public string AsJvRealtimeKey() => $"{RaceDate:yyyyMMdd}{TrackCode}{RaceNumber:D2}";
     }
 
     /// <summary>朝一取得する出走表（番組表）1頭分。画像の出馬表相当。</summary>
