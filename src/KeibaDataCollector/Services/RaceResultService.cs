@@ -83,52 +83,70 @@ namespace KeibaDataCollector.Services
             if (rc == -1)
             {
                 // JV-Linkインターフェース仕様書のコード表より: -1は「該当データ無し」＝まだ未確定。
+                // ただし同仕様書に「-1の場合もJVCloseを呼び出して取り込み処理を終了してください」と
+                // 明記されている。実機で確認: ここでCloseを呼ばずにreturnすると、次回以降の
+                // OpenRealtime呼び出しが全て「-202 前回のOpenに対してCloseが呼ばれていない
+                // （オープン中）」で失敗し続ける。
+                _source.Close();
                 return false;
             }
             if (rc != 0)
+            {
+                // 例外を投げる前にもCloseを呼び、次回以降の呼び出しが-202で
+                // 連鎖的に失敗しないようにする。
+                _source.Close();
                 throw new InvalidOperationException($"{_source.SourceName} OpenRealtime failed: {rc}");
+            }
 
             var result = GetOrCreate(raceKey);
             bool gotPayout = false;
 
-            while (true)
+            // Open成功後は、読み込みループの途中で例外が発生した場合でも必ずCloseが
+            // 呼ばれるようtry/finallyで保護する（-202連鎖を防ぐため）。
+            try
             {
-                int size = _source.Read(out var buffer, out _);
-                if (size == 0) break;
-                if (size == -1) continue; // ファイル切り替わり（正常）
-                if (size == -3)
+                while (true)
                 {
-                    await Task.Delay(500);
-                    continue;
-                }
-                if (size < 0)
-                    throw new InvalidOperationException($"{_source.SourceName} Read failed: {size}");
+                    int size = _source.Read(out var buffer, out _);
+                    if (size == 0) break;
+                    if (size == -1) continue; // ファイル切り替わり（正常）
+                    if (size == -3)
+                    {
+                        await Task.Delay(500);
+                        continue;
+                    }
+                    if (size < 0)
+                        throw new InvalidOperationException($"{_source.SourceName} Read failed: {size}");
 
-                switch (JvRecordParser.GetRecordTypeId(buffer))
-                {
-                    case "SE":
+                    switch (JvRecordParser.GetRecordTypeId(buffer))
                     {
-                        var (_, entry) = JvRecordParser.ParseRaceResult(buffer);
-                        result.Entries.RemoveAll(e => e.Umaban == entry.Umaban);
-                        result.Entries.Add(entry);
-                        break;
-                    }
-                    case "HR":
-                    {
-                        var (_, payouts) = JvRecordParser.ParsePayouts(buffer);
-                        result.Payouts = payouts;
-                        gotPayout = true;
-                        break;
-                    }
-                    case "RA":
-                    {
-                        var (_, cornerPassage) = JvRecordParser.ParseCornerPassage(buffer);
-                        result.CornerPassage = cornerPassage;
-                        break;
+                        case "SE":
+                        {
+                            var (_, entry) = JvRecordParser.ParseRaceResult(buffer);
+                            result.Entries.RemoveAll(e => e.Umaban == entry.Umaban);
+                            result.Entries.Add(entry);
+                            break;
+                        }
+                        case "HR":
+                        {
+                            var (_, payouts) = JvRecordParser.ParsePayouts(buffer);
+                            result.Payouts = payouts;
+                            gotPayout = true;
+                            break;
+                        }
+                        case "RA":
+                        {
+                            var (_, cornerPassage) = JvRecordParser.ParseCornerPassage(buffer);
+                            result.CornerPassage = cornerPassage;
+                            break;
+                        }
                     }
                 }
             }
-            _source.Close();
+            finally
+            {
+                _source.Close();
+            }
 
             result.Entries.Sort((a, b) => a.Umaban.CompareTo(b.Umaban));
             await _wp.PublishRaceResultAsync(result);
@@ -150,39 +168,48 @@ namespace KeibaDataCollector.Services
                 return new List<RaceKey>();
             }
             if (open.ReturnCode < 0)
+            {
+                _source.Close();
                 throw new InvalidOperationException($"{_source.SourceName} Open failed: {open.ReturnCode}");
+            }
 
             var keys = new List<RaceKey>();
-            while (true)
+            try
             {
-                int size = _source.Read(out var buffer, out _);
-                if (size == 0) break;
-                if (size == -1) continue;
-                if (size == -3)
+                while (true)
                 {
-                    Thread.Sleep(500);
-                    continue;
-                }
-                if (size < 0)
-                    throw new InvalidOperationException($"{_source.SourceName} Read failed: {size}");
+                    int size = _source.Read(out var buffer, out _);
+                    if (size == 0) break;
+                    if (size == -1) continue;
+                    if (size == -3)
+                    {
+                        Thread.Sleep(500);
+                        continue;
+                    }
+                    if (size < 0)
+                        throw new InvalidOperationException($"{_source.SourceName} Read failed: {size}");
 
-                if (JvRecordParser.GetRecordTypeId(buffer) != "RA") continue;
+                    if (JvRecordParser.GetRecordTypeId(buffer) != "RA") continue;
 
-                RaceKey raceKey;
-                try
-                {
-                    (raceKey, _) = JvRecordParser.ParseCornerPassage(buffer);
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"[{_source.SourceName}] RAレコードのパース失敗（このレコードのみスキップ）: {ex.Message}");
-                    continue;
-                }
+                    RaceKey raceKey;
+                    try
+                    {
+                        (raceKey, _) = JvRecordParser.ParseCornerPassage(buffer);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[{_source.SourceName}] RAレコードのパース失敗（このレコードのみスキップ）: {ex.Message}");
+                        continue;
+                    }
 
-                if (raceKey.RaceDate.Date == targetDate.Date)
-                    keys.Add(raceKey);
+                    if (raceKey.RaceDate.Date == targetDate.Date)
+                        keys.Add(raceKey);
+                }
             }
-            _source.Close();
+            finally
+            {
+                _source.Close();
+            }
 
             return keys;
         }

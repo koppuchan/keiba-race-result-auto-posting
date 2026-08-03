@@ -40,7 +40,13 @@ namespace KeibaDataCollector.Services
                 return;
             }
             if (open.ReturnCode < 0)
+            {
+                // 例外を投げる前にもCloseを呼ぶ。呼ばずに抜けると、JV-Linkインターフェース
+                // 仕様書の-202（前回のOpenに対してCloseが呼ばれていない）により、次回以降の
+                // Open呼び出しがすべて失敗し続けてしまう（実機で確認済みの問題パターン）。
+                _source.Close();
                 throw new InvalidOperationException($"{_source.SourceName} Open failed: {open.ReturnCode}");
+            }
 
             var entriesByRace = new Dictionary<string, List<RaceCardEntry>>();
             var raceKeys = new Dictionary<string, RaceKey>();
@@ -50,59 +56,67 @@ namespace KeibaDataCollector.Services
             var otherDates = new HashSet<string>();
             var typeCounts = new Dictionary<string, int>();
 
-            while (true)
+            // Open成功後は、読み込みループの途中で例外が発生した場合でも必ずCloseが
+            // 呼ばれるようtry/finallyで保護する（上記と同じ-202連鎖を防ぐため）。
+            try
             {
-                int size = _source.Read(out var buffer, out _);
-                if (size == 0) break;
-                if (size == -1) continue; // ファイル切り替わり（正常、JVRead仕様書より）
-                if (size == -3)
+                while (true)
                 {
-                    // ファイルダウンロード中（JVRead仕様書より）。busyループにならないよう少し待つ。
-                    System.Threading.Thread.Sleep(500);
-                    continue;
-                }
-                if (size < 0)
-                    throw new InvalidOperationException($"{_source.SourceName} Read failed: {size}");
-                totalRecords++;
+                    int size = _source.Read(out var buffer, out _);
+                    if (size == 0) break;
+                    if (size == -1) continue; // ファイル切り替わり（正常、JVRead仕様書より）
+                    if (size == -3)
+                    {
+                        // ファイルダウンロード中（JVRead仕様書より）。busyループにならないよう少し待つ。
+                        System.Threading.Thread.Sleep(500);
+                        continue;
+                    }
+                    if (size < 0)
+                        throw new InvalidOperationException($"{_source.SourceName} Read failed: {size}");
+                    totalRecords++;
 
-                var typeId = JvRecordParser.GetRecordTypeId(buffer);
-                typeCounts[typeId] = typeCounts.TryGetValue(typeId, out var c) ? c + 1 : 1;
+                    var typeId = JvRecordParser.GetRecordTypeId(buffer);
+                    typeCounts[typeId] = typeCounts.TryGetValue(typeId, out var c) ? c + 1 : 1;
 
-                if (typeId != "SE") continue;
-                seRecords++;
+                    if (typeId != "SE") continue;
+                    seRecords++;
 
-                RaceKey raceKey;
-                RaceCardEntry entry;
-                try
-                {
-                    (raceKey, entry) = JvRecordParser.ParseRaceCard(buffer);
-                }
-                catch (Exception ex)
-                {
-                    // 1レコードのパース失敗で情報源全体を止めない。原因調査用に文字列長も残す。
-                    Console.WriteLine(
-                        $"[{_source.SourceName}] SEレコードのパース失敗（このレコードのみスキップ）: " +
-                        $"生文字列長={buffer.Length}, エラー={ex.Message}");
-                    continue;
-                }
+                    RaceKey raceKey;
+                    RaceCardEntry entry;
+                    try
+                    {
+                        (raceKey, entry) = JvRecordParser.ParseRaceCard(buffer);
+                    }
+                    catch (Exception ex)
+                    {
+                        // 1レコードのパース失敗で情報源全体を止めない。原因調査用に文字列長も残す。
+                        Console.WriteLine(
+                            $"[{_source.SourceName}] SEレコードのパース失敗（このレコードのみスキップ）: " +
+                            $"生文字列長={buffer.Length}, エラー={ex.Message}");
+                        continue;
+                    }
 
-                // option=2は「今週データ」全体を返しうるため、朝一バッチの対象日以外は捨てる。
-                if (raceKey.RaceDate.Date != targetDate.Date)
-                {
-                    otherDates.Add(raceKey.RaceDate.ToString("yyyy-MM-dd"));
-                    continue;
-                }
+                    // option=2は「今週データ」全体を返しうるため、朝一バッチの対象日以外は捨てる。
+                    if (raceKey.RaceDate.Date != targetDate.Date)
+                    {
+                        otherDates.Add(raceKey.RaceDate.ToString("yyyy-MM-dd"));
+                        continue;
+                    }
 
-                var slug = raceKey.AsSlug();
-                if (!entriesByRace.TryGetValue(slug, out var list))
-                {
-                    list = new List<RaceCardEntry>();
-                    entriesByRace[slug] = list;
-                    raceKeys[slug] = raceKey;
+                    var slug = raceKey.AsSlug();
+                    if (!entriesByRace.TryGetValue(slug, out var list))
+                    {
+                        list = new List<RaceCardEntry>();
+                        entriesByRace[slug] = list;
+                        raceKeys[slug] = raceKey;
+                    }
+                    list.Add(entry);
                 }
-                list.Add(entry);
             }
-            _source.Close();
+            finally
+            {
+                _source.Close();
+            }
 
             var typeBreakdown = string.Join(", ", typeCounts.OrderByDescending(kv => kv.Value).Select(kv => $"{kv.Key}:{kv.Value}"));
             Console.WriteLine(
