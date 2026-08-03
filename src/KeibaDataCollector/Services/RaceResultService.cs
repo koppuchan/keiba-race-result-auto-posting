@@ -88,9 +88,27 @@ namespace KeibaDataCollector.Services
             Console.WriteLine($"[{_source.SourceName}] {targetDate:yyyy-MM-dd} 監視終了（全レース確定、またはキャンセル）。");
         }
 
-        /// <summary>指定レースの払戻確定状況をJVRTOpen("0B12", レースキー)で確認し、
-        /// データがあれば取得・WordPress反映する。払戻まで取得できたらtrueを返す
-        /// （＝このレースはもう監視不要）。</summary>
+        /// <summary>
+        /// 0B12（速報レース情報・成績確定後）は、1レースにつき段階的に4回配信される
+        /// （JV-Data仕様書 データ提供タイミングより）:
+        ///   払戻･3着まで確定 → 払戻･5着まで確定 → 払戻･全馬着順確定 → 払戻･全馬着順+コーナ通過順
+        /// このときSE(馬毎レース情報)のデータ区分は 3→4→5→6 と進み、仕様書の特記事項に
+        /// 「区分が3(3着まで確定)・4(5着まで確定)の場合、該当馬のみの情報を返す
+        /// （順位が確定していない馬の情報は返さない）」と明記されている。
+        ///
+        /// 実機で確認: 払戻(HR)を受け取った時点で監視終了としていたため、最初の
+        /// 「3着まで確定」で打ち切ってしまい、12頭立てのレースが着順3件・コーナー0件で
+        /// 確定扱いになっていた。全馬着順+コーナ通過順（区分6）以降まで待つ必要がある。
+        /// </summary>
+        private const string DataKubunAllFinishersWithCorner = "6";
+        private const string DataKubunFinalResult = "7";
+
+        private static bool IsCompleteResult(string dataKubun) =>
+            dataKubun == DataKubunAllFinishersWithCorner || dataKubun == DataKubunFinalResult;
+
+        /// <summary>指定レースの確定状況をJVRTOpen("0B12", レースキー)で確認し、
+        /// データがあれば取得・WordPress反映する（段階的に届くため、その時点の最新内容で都度反映）。
+        /// 全馬着順+コーナ通過順まで確定したらtrueを返す（＝このレースはもう監視不要）。</summary>
         private async Task<bool> CheckAndPublishRaceAsync(RaceKey raceKey)
         {
             int rc = _source.OpenRealtime("0B12", raceKey.AsJvRealtimeKey());
@@ -113,7 +131,9 @@ namespace KeibaDataCollector.Services
             }
 
             var result = GetOrCreate(raceKey);
-            bool gotPayout = false;
+            bool gotAnyRecord = false;
+            bool isComplete = false;
+            var seenDataKubun = new SortedSet<string>();
 
             // Open成功後は、読み込みループの途中で例外が発生した場合でも必ずCloseが
             // 呼ばれるようtry/finallyで保護する（-202連鎖を防ぐため）。
@@ -132,26 +152,37 @@ namespace KeibaDataCollector.Services
                     if (size < 0)
                         throw new InvalidOperationException($"{_source.SourceName} Read failed: {size}");
 
+                    var dataKubun = JvRecordParser.GetDataKubun(buffer);
+
                     switch (JvRecordParser.GetRecordTypeId(buffer))
                     {
                         case "SE":
                         {
                             var (_, entry) = JvRecordParser.ParseRaceResult(buffer);
+                            // 段階配信のたびに同じ馬が再送されるため、馬番で上書きマージする。
                             result.Entries.RemoveAll(e => e.Umaban == entry.Umaban);
                             result.Entries.Add(entry);
+                            gotAnyRecord = true;
+                            seenDataKubun.Add(dataKubun);
+                            if (IsCompleteResult(dataKubun)) isComplete = true;
                             break;
                         }
                         case "HR":
                         {
                             var (_, payouts) = JvRecordParser.ParsePayouts(buffer);
                             result.Payouts = payouts;
-                            gotPayout = true;
+                            gotAnyRecord = true;
                             break;
                         }
                         case "RA":
                         {
                             var (_, cornerPassage) = JvRecordParser.ParseCornerPassage(buffer);
-                            result.CornerPassage = cornerPassage;
+                            // コーナー通過順位は区分6以降でのみ設定される。空で上書きしない。
+                            if (cornerPassage.Count > 0)
+                                result.CornerPassage = cornerPassage;
+                            gotAnyRecord = true;
+                            seenDataKubun.Add(dataKubun);
+                            if (IsCompleteResult(dataKubun)) isComplete = true;
                             break;
                         }
                     }
@@ -162,13 +193,17 @@ namespace KeibaDataCollector.Services
                 _source.Close();
             }
 
+            // rc=0でもレコードが1件も無い場合は反映不要（無駄なWordPress更新を避ける）。
+            if (!gotAnyRecord) return false;
+
             result.Entries.Sort((a, b) => a.Umaban.CompareTo(b.Umaban));
             await _wp.PublishRaceResultAsync(result);
             Console.WriteLine(
                 $"[{_source.SourceName}] {raceKey.AsSlug()} 反映（着順{result.Entries.Count}件, " +
-                $"払戻{result.Payouts.Count}件, コーナー{result.CornerPassage.Count}件）");
+                $"払戻{result.Payouts.Count}件, コーナー{result.CornerPassage.Count}件, " +
+                $"データ区分[{string.Join(",", seenDataKubun)}]{(isComplete ? " 確定" : " 速報・続報待ち")}）");
 
-            return gotPayout;
+            return isComplete;
         }
 
         /// <summary>朝一バッチと同じ方法で当日のレース一覧（キーのみ）を取得する。
