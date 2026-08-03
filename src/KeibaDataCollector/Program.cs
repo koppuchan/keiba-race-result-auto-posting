@@ -56,6 +56,14 @@ namespace KeibaDataCollector
                         break;
                     }
 
+                    case "probe":
+                        // 調査用。どのデータ種別で何が取得できるかを実際に叩いて確認する
+                        // （地方競馬でオッズ・人気が別種別で提供されていないかの確認用）。
+                        // WordPressには一切書き込まない。
+                        RunProbeFor(jvLink);
+                        RunProbeFor(umaConn);
+                        break;
+
                     case "setup":
                         // 初回1回だけ手動実行: 利用キー入力ダイアログを開いて設定を保存する。
                         // 片方のProgIDが未確認/未登録でもう片方の結果が分からなくなるのを避けるため、
@@ -65,12 +73,26 @@ namespace KeibaDataCollector
                         break;
 
                     default:
-                        Console.WriteLine("使い方: KeibaDataCollector.exe [setup|morning|watch]");
+                        Console.WriteLine("使い方: KeibaDataCollector.exe [setup|morning|watch|probe]");
                         Console.WriteLine("  setup   : 初回のみ。利用キー等をGUIダイアログで設定する。");
                         Console.WriteLine("  morning : 朝一バッチ。当日の出走表を取得しWordPressへ反映する。");
                         Console.WriteLine("  watch   : レース確定を監視し、結果・払戻を随時WordPressへ反映する。");
+                        Console.WriteLine("  probe   : 調査用。どのデータ種別で何が取得できるか確認する（WordPressへは書き込まない）。");
                         break;
                 }
+            }
+        }
+
+        private static void RunProbeFor(JvSpecComDataSource source)
+        {
+            try
+            {
+                source.Initialize(AppConfig.JvLinkSoftwareId);
+                new DataSpecProbeService(source).Run(DateTime.Today);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[{source.SourceName}] 調査失敗（このソースのみスキップ）: {ex.Message}");
             }
         }
 
