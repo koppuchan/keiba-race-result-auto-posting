@@ -44,10 +44,18 @@ namespace KeibaDataCollector.WordPress
 
         public async Task UpsertRaceCardAsync(RaceKey key, List<RaceCardEntry> raceCardEntries)
         {
-            var existingId = await FindPostIdByRaceKeyAsync(key.AsSlug());
+            var existing = await FindPostByRaceKeyAsync(key.AsSlug());
+
+            // 既に結果が入っている投稿には出走表のタイトルを被せない。
+            // 朝一バッチを結果反映後に再実行した場合（手動での試運転や、出馬表の訂正が
+            // 後から届いた場合など）、タイトルだけ「出走表」に戻り、本文は結果表という
+            // 不整合になるため。表示側は race_result があれば結果表を出す作りなので、
+            // タイトルもそれに合わせる。
+            var suffix = existing != null && existing.HasRaceResult ? "結果" : "出走表";
+
             var payload = new
             {
-                title = $"{key.RaceDate:yyyy/MM/dd} {key.TrackCode} {key.RaceNumber}R 出走表",
+                title = $"{key.RaceDate:yyyy/MM/dd} {key.TrackCode} {key.RaceNumber}R {suffix}",
                 status = "publish",
                 meta = new
                 {
@@ -55,7 +63,7 @@ namespace KeibaDataCollector.WordPress
                     race_card = JsonConvert.SerializeObject(raceCardEntries, CamelCaseSettings),
                 }
             };
-            await SendAsync(existingId, payload);
+            await SendAsync(existing?.Id, payload);
         }
 
         // レースキーごとに、最後に送信した内容を保持する。watchモードは確定するまで同じレースを
@@ -78,7 +86,7 @@ namespace KeibaDataCollector.WordPress
             if (_lastPublishedResult.TryGetValue(slug, out var previous) && previous == signature)
                 return false;
 
-            var existingId = await FindPostIdByRaceKeyAsync(slug);
+            var existing = await FindPostByRaceKeyAsync(slug);
             var payload = new
             {
                 title = $"{result.Key.RaceDate:yyyy/MM/dd} {result.Key.TrackCode} {result.Key.RaceNumber}R 結果",
@@ -91,22 +99,41 @@ namespace KeibaDataCollector.WordPress
                     corner_passage = cornerPassageJson,
                 }
             };
-            await SendAsync(existingId, payload);
+            await SendAsync(existing?.Id, payload);
 
             // 送信に成功した場合のみ記録する（失敗時は次回リトライさせたいため）。
             _lastPublishedResult[slug] = signature;
             return true;
         }
 
-        private async Task<int?> FindPostIdByRaceKeyAsync(string raceKeySlug)
+        /// <summary>race_key が一致する既存投稿を探す。無ければ null。</summary>
+        private async Task<ExistingRacePost> FindPostByRaceKeyAsync(string raceKeySlug)
         {
-            // race_key をmeta_queryで検索できるようWordPress側にカスタムRESTフィルタを用意する想定。
+            // race_key をmeta_queryで検索できるようWordPress側にカスタムRESTフィルタを用意している
+            // （src/wordpress-plugin/keiba-race-sync の rest_race_query フィルタ）。
             var response = await _http.GetAsync($"{_baseUrl}/wp-json/wp/v2/race?meta_key=race_key&meta_value={raceKeySlug}");
             if (!response.IsSuccessStatusCode) return null;
 
             var body = await response.Content.ReadAsStringAsync();
             var posts = JsonConvert.DeserializeObject<WpPost[]>(body);
-            return posts != null && posts.Length > 0 ? posts[0].Id : (int?)null;
+            if (posts == null || posts.Length == 0) return null;
+
+            var post = posts[0];
+            var raceResult = post.Meta?.RaceResult;
+
+            return new ExistingRacePost
+            {
+                Id = post.Id,
+                // メタは未設定だと "" や "[]" になりうるため、中身のある配列かどうかで判定する。
+                HasRaceResult = !string.IsNullOrWhiteSpace(raceResult)
+                                && raceResult.Trim() != "[]",
+            };
+        }
+
+        private class ExistingRacePost
+        {
+            public int Id { get; set; }
+            public bool HasRaceResult { get; set; }
         }
 
         private async Task SendAsync(int? existingId, object payload)
@@ -130,6 +157,15 @@ namespace KeibaDataCollector.WordPress
         {
             [JsonProperty("id")]
             public int Id { get; set; }
+
+            [JsonProperty("meta")]
+            public WpPostMeta Meta { get; set; }
+        }
+
+        private class WpPostMeta
+        {
+            [JsonProperty("race_result")]
+            public string RaceResult { get; set; }
         }
     }
 }
