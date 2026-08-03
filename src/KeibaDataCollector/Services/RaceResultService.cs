@@ -36,10 +36,16 @@ namespace KeibaDataCollector.Services
             _pollInterval = pollInterval;
         }
 
+        // ポーリングが生きているのに未確定レコードは何もログを出さないため、外から見ると
+        // 「待機中」と「詰まっている」の区別がつかない。一定周期ごとに状況を出力する。
+        private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromMinutes(2);
+
         public async Task RunWatchLoopAsync(DateTime targetDate, CancellationToken ct)
         {
             var pending = DiscoverTodaysRaceKeys(targetDate);
             Console.WriteLine($"[{_source.SourceName}] {targetDate:yyyy-MM-dd} 監視対象レース {pending.Count}件を検出。");
+
+            var lastHeartbeat = DateTime.Now;
 
             while (!ct.IsCancellationRequested && pending.Count > 0)
             {
@@ -65,6 +71,14 @@ namespace KeibaDataCollector.Services
                         Console.WriteLine($"[{_source.SourceName}] {raceKey.AsSlug()} 払戻確定・反映完了。監視対象から除外。");
                         pending.RemoveAt(i);
                     }
+                }
+
+                if (DateTime.Now - lastHeartbeat >= HeartbeatInterval)
+                {
+                    Console.WriteLine(
+                        $"[{_source.SourceName}] 監視中... 未確定{pending.Count}件残り " +
+                        $"（{DateTime.Now:HH:mm:ss}時点、ポーリングは生きています）。");
+                    lastHeartbeat = DateTime.Now;
                 }
 
                 if (pending.Count > 0)
