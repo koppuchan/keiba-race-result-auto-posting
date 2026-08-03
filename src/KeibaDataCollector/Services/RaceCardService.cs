@@ -118,9 +118,11 @@ namespace KeibaDataCollector.Services
                 _source.Close();
             }
 
+            // 取得内容の内訳。データが届いているか／対象日の絞り込みが効いているかを
+            // 運用時に確認できるよう、通常ログとして残す。
             var typeBreakdown = string.Join(", ", typeCounts.OrderByDescending(kv => kv.Value).Select(kv => $"{kv.Key}:{kv.Value}"));
             Console.WriteLine(
-                $"[{_source.SourceName}] 診断: 全レコード{totalRecords}件, SEレコード{seRecords}件, " +
+                $"[{_source.SourceName}] 取得内訳: 全レコード{totalRecords}件, SEレコード{seRecords}件, " +
                 $"対象日({targetDate:yyyy-MM-dd})以外の日付={string.Join(",", otherDates)}, " +
                 $"種別内訳=[{typeBreakdown}]");
 

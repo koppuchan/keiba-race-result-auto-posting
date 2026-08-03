@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using KeibaDataCollector.Models;
 using static KeibaDataCollector.Interop.JvDataSdk.JVData_Struct;
 
@@ -54,33 +55,17 @@ namespace KeibaDataCollector.Interop
             return (ExtractRaceKey(se.id), entry);
         }
 
-        // ★診断用（原因特定後に削除する）: 結果テーブルで斤量・人気・単勝・後3F・着差が
-        // すべて0/空になる件の切り分け。SDKの構造体が各フィールドに何を読み取っているかを
-        // 1レコードだけ出力する。値が空/ゼロなら「そのデータ源が提供していない」、
-        // 想定と違う値ならバイト位置のズレ、と判断できる。
-        private static bool _resultFieldDebugLogged;
-
-        /// <summary>"SE"レコード（馬毎レース情報、確定後）を着順結果としてパースする。</summary>
+        /// <summary>"SE"レコード（馬毎レース情報、確定後）を着順結果としてパースする。
+        ///
+        /// 地方競馬（UmaConn）では、単勝オッズ・単勝人気順・後3(4)ハロンタイムが
+        /// 常に仕様書の初期値で返る（バイト位置のズレではなく、SEレコードに載っていない）。
+        /// このうちオッズと人気順は速報オッズ("0B31")から取得できるため
+        /// RaceResultService側で補完する。後3ハロンは他種別にも無いため取得不可。
+        /// </summary>
         public static (RaceKey Key, RaceResultEntry Entry) ParseRaceResult(string rawRecord)
         {
             var se = new JV_SE_RACE_UMA();
             se.SetDataB(ref rawRecord);
-
-            if (!_resultFieldDebugLogged)
-            {
-                _resultFieldDebugLogged = true;
-                Console.WriteLine(
-                    $"SE結果診断: 文字列長={rawRecord.Length}, データ区分=[{GetDataKubun(rawRecord)}], " +
-                    $"馬名=[{Trim(se.Bamei)}], 確定着順=[{se.KakuteiJyuni}], " +
-                    $"負担重量=[{se.Futan}], 単勝人気順=[{se.Ninki}], 単勝オッズ=[{se.Odds}], " +
-                    $"後3ハロン=[{se.HaronTimeL3}], 後4ハロン=[{se.HaronTimeL4}], " +
-                    $"着差コード=[{se.ChakusaCD}], 走破タイム=[{se.Time}], 馬体重=[{se.BaTaijyu}]");
-
-                // 負担重量(289)・馬体重(325)まわりだけ想定外の値になるため、その周辺の生バイトを
-                // 仕様書の位置と突き合わせられるようダンプする。rawRecordはLatin-1で
-                // 1バイト=1文字にしてあるので、文字位置＝バイト位置(1始まり)として読める。
-                DumpRawRange(rawRecord, 281, 70);
-            }
 
             var entry = new RaceResultEntry
             {
@@ -102,26 +87,6 @@ namespace KeibaDataCollector.Interop
             };
 
             return (ExtractRaceKey(se.id), entry);
-        }
-
-        /// <summary>★診断用（原因特定後に削除する）: 生レコードの指定バイト範囲を
-        /// 「バイト位置: 表示文字(HEX)」形式でダンプする。</summary>
-        private static void DumpRawRange(string rawRecord, int startPos1Based, int length)
-        {
-            var end = Math.Min(startPos1Based - 1 + length, rawRecord.Length);
-            var chars = new System.Text.StringBuilder();
-            var hex = new System.Text.StringBuilder();
-
-            for (int i = startPos1Based - 1; i < end; i++)
-            {
-                var c = rawRecord[i];
-                chars.Append(c >= 0x20 && c < 0x7F ? c : '.');
-                hex.Append(((int)c).ToString("X2")).Append(' ');
-            }
-
-            Console.WriteLine($"SE生バイト診断: {startPos1Based}〜{end}バイト目");
-            Console.WriteLine($"  表示: [{chars}]");
-            Console.WriteLine($"  HEX : {hex}");
         }
 
         /// <summary>"HR"レコード（払戻）をパースする。1レコードに全券種分がまとまっているため
@@ -146,6 +111,54 @@ namespace KeibaDataCollector.Interop
             AddPayInfo4(payouts, "3連単", hr.PaySanrentan);
 
             return (ExtractRaceKey(hr.id), payouts);
+        }
+
+        /// <summary>
+        /// "O1"レコード（オッズ1・単複枠）から、馬番ごとの単勝オッズと単勝人気順を取り出す。
+        ///
+        /// 地方競馬（UmaConn）は、成績レコード(SE)の単勝オッズ・単勝人気順を初期値のまま返す
+        /// （実機で確認）。一方、速報オッズ("0B31"/"0B30")では実値を配信している。
+        /// そのため結果ページのオッズ・人気はこちらから補完する。
+        /// </summary>
+        public static (RaceKey Key, Dictionary<int, TanshoOdds> ByUmaban) ParseTanshoOdds(string rawRecord)
+        {
+            var o1 = new JV_O1_ODDS_TANFUKUWAKU();
+            o1.SetDataB(ref rawRecord);
+
+            var byUmaban = new Dictionary<int, TanshoOdds>();
+            foreach (var t in o1.OddsTansyoInfo)
+            {
+                var umaban = SafeInt(t.Umaban);
+                if (umaban <= 0) continue;
+
+                // 仕様書「７．オッズ1（単複枠）」より、オッズ欄には数値以外も入りうる。
+                //   "0000":無投票 / "----":発売前取消 / "****":発売後取消 / 空白:登録なし
+                // 人気順欄も同様に '--' / '**' / 空白 がありうるため、数値以外は採用しない。
+                var oddsRaw = Trim(t.Odds);
+                if (oddsRaw.Length == 0 || !oddsRaw.All(char.IsDigit)) continue;
+
+                var oddsValue = SafeInt(oddsRaw);
+                if (oddsValue <= 0) continue; // 無投票
+
+                var ninkiRaw = Trim(t.Ninki);
+                var ninki = ninkiRaw.Length > 0 && ninkiRaw.All(char.IsDigit) ? SafeInt(ninkiRaw) : 0;
+
+                byUmaban[umaban] = new TanshoOdds
+                {
+                    // 999.9倍形式（末尾1桁が小数第1位）
+                    Odds = oddsValue / 10.0,
+                    Ninki = ninki,
+                };
+            }
+
+            return (ExtractRaceKey(o1.id), byUmaban);
+        }
+
+        /// <summary>単勝オッズと単勝人気順の組。</summary>
+        public class TanshoOdds
+        {
+            public double Odds { get; set; }
+            public int Ninki { get; set; }
         }
 
         /// <summary>"RA"レコード（レース詳細）からコーナー通過順位を取り出す。</summary>

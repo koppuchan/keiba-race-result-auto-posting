@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using KeibaDataCollector.Interop;
@@ -20,6 +21,10 @@ namespace KeibaDataCollector.Services
         // option=2(今週データ)はサーバー側で対象範囲を絞ってくれるため、fromtimeは十分に古い
         // 固定値にする（RaceCardServiceと同じ理由）。
         private const string EarlyAnchorFromTime = "19860101000000";
+
+        // 速報オッズ（単複枠）。JV-Data仕様書「（２）速報系データ」より、O1レコード
+        // （単勝オッズ・単勝人気順を含む）が返る種別。
+        private const string RealtimeOddsDataSpec = "0B31";
 
         private readonly IRaceDataSource _source;
         private readonly WordPressClient _wp;
@@ -196,6 +201,12 @@ namespace KeibaDataCollector.Services
             // rc=0でもレコードが1件も無い場合は反映不要（無駄なWordPress更新を避ける）。
             if (!gotAnyRecord) return false;
 
+            // 地方競馬（UmaConn）はSEレコードの単勝オッズ・単勝人気順を初期値のまま返すため、
+            // 速報オッズ("0B31")から補完する（実機で0B31には実値が入っていることを確認済み）。
+            // 中央競馬はSEに実値が入るので、その場合はここを通らない＝挙動を変えない。
+            if (result.Entries.Any(e => e.TanshoOdds <= 0 && e.Ninki <= 0))
+                MergeTanshoOddsFromRealtime(raceKey, result);
+
             result.Entries.Sort((a, b) => a.Umaban.CompareTo(b.Umaban));
 
             // 内容が前回から変わっていなければWordPressへは送られない。その場合ログも出さない
@@ -210,6 +221,60 @@ namespace KeibaDataCollector.Services
             }
 
             return isComplete;
+        }
+
+        /// <summary>速報オッズ("0B31" 単複枠)から単勝オッズ・単勝人気順を取得し、
+        /// 値が入っていない出走馬に補完する。取得できなくても結果本体の反映は続行する。</summary>
+        private void MergeTanshoOddsFromRealtime(RaceKey raceKey, RaceResult result)
+        {
+            Dictionary<int, JvRecordParser.TanshoOdds> byUmaban = null;
+
+            try
+            {
+                int rc = _source.OpenRealtime(RealtimeOddsDataSpec, raceKey.AsJvRealtimeKey());
+                if (rc != 0)
+                {
+                    _source.Close();
+                    return; // -1（該当データ無し）等。オッズ無しのまま反映する。
+                }
+
+                try
+                {
+                    while (true)
+                    {
+                        int size = _source.Read(out var buffer, out _);
+                        if (size == 0) break;
+                        if (size == -1) continue;
+                        if (size == -3) { Thread.Sleep(500); continue; }
+                        if (size < 0) break;
+
+                        if (JvRecordParser.GetRecordTypeId(buffer) != "O1") continue;
+
+                        var (_, parsed) = JvRecordParser.ParseTanshoOdds(buffer);
+                        if (parsed.Count > 0) byUmaban = parsed;
+                    }
+                }
+                finally
+                {
+                    _source.Close();
+                }
+            }
+            catch (Exception ex)
+            {
+                // オッズは補助情報。取得に失敗しても着順・払戻の反映は止めない。
+                Console.WriteLine($"[{_source.SourceName}] {raceKey.AsSlug()} オッズ取得失敗（オッズ無しで反映）: {ex.Message}");
+                return;
+            }
+
+            if (byUmaban == null) return;
+
+            foreach (var entry in result.Entries)
+            {
+                if (!byUmaban.TryGetValue(entry.Umaban, out var odds)) continue;
+                // SE側に実値があればそちらを尊重し、無い項目だけ埋める。
+                if (entry.TanshoOdds <= 0) entry.TanshoOdds = odds.Odds;
+                if (entry.Ninki <= 0) entry.Ninki = odds.Ninki;
+            }
         }
 
         /// <summary>朝一バッチと同じ方法で当日のレース一覧（キーのみ）を取得する。
