@@ -2,11 +2,26 @@
     margin: 1.5em 0;
 }
 
+/* 出走表・結果テーブルは列数が多いため、幅が足りない画面では
+   列を潰して折り返すのではなく、テーブルごと横スクロールさせる。 */
+.keiba-table-scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    margin-bottom: 1.5em;
+}
+
 .keiba-table {
     width: 100%;
     border-collapse: collapse;
     margin-bottom: 1.5em;
     font-size: 0.95em;
+}
+
+/* スクロール領域内では、必要なだけ横に伸びてよい（内容が入りきる幅を優先）。 */
+.keiba-table-scroll > .keiba-table {
+    width: auto;
+    min-width: 100%;
+    margin-bottom: 0;
 }
 
 .keiba-table caption {
@@ -23,12 +38,14 @@
     white-space: nowrap;
 }
 
+/* 馬名列だけ左寄せにする。以前は white-space: normal も指定していたが、
+   横幅が足りないと「ヌ／サ／マ／イ…」のように1文字ずつ縦積みになってしまうため、
+   横スクロール対応に合わせて折り返さない（nowrap）に統一する。 */
 .keiba-result-table th:nth-child(4),
 .keiba-result-table td:nth-child(4),
 .keiba-card-table th:nth-child(3),
 .keiba-card-table td:nth-child(3) {
     text-align: left;
-    white-space: normal;
 }
 
 .keiba-table thead th {

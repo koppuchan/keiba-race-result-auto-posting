@@ -54,11 +54,28 @@ namespace KeibaDataCollector.Interop
             return (ExtractRaceKey(se.id), entry);
         }
 
+        // ★診断用（原因特定後に削除する）: 結果テーブルで斤量・人気・単勝・後3F・着差が
+        // すべて0/空になる件の切り分け。SDKの構造体が各フィールドに何を読み取っているかを
+        // 1レコードだけ出力する。値が空/ゼロなら「そのデータ源が提供していない」、
+        // 想定と違う値ならバイト位置のズレ、と判断できる。
+        private static bool _resultFieldDebugLogged;
+
         /// <summary>"SE"レコード（馬毎レース情報、確定後）を着順結果としてパースする。</summary>
         public static (RaceKey Key, RaceResultEntry Entry) ParseRaceResult(string rawRecord)
         {
             var se = new JV_SE_RACE_UMA();
             se.SetDataB(ref rawRecord);
+
+            if (!_resultFieldDebugLogged)
+            {
+                _resultFieldDebugLogged = true;
+                Console.WriteLine(
+                    $"SE結果診断: 文字列長={rawRecord.Length}, データ区分=[{GetDataKubun(rawRecord)}], " +
+                    $"馬名=[{Trim(se.Bamei)}], 確定着順=[{se.KakuteiJyuni}], " +
+                    $"負担重量=[{se.Futan}], 単勝人気順=[{se.Ninki}], 単勝オッズ=[{se.Odds}], " +
+                    $"後3ハロン=[{se.HaronTimeL3}], 後4ハロン=[{se.HaronTimeL4}], " +
+                    $"着差コード=[{se.ChakusaCD}], 走破タイム=[{se.Time}], 馬体重=[{se.BaTaijyu}]");
+            }
 
             var entry = new RaceResultEntry
             {
@@ -90,9 +107,13 @@ namespace KeibaDataCollector.Interop
             hr.SetDataB(ref rawRecord);
 
             var payouts = new List<PayoutEntry>();
-            AddPayInfo1(payouts, "単勝", hr.PayTansyo);
-            AddPayInfo1(payouts, "複勝", hr.PayFukusyo);
-            AddPayInfo1(payouts, "枠連", hr.PayWakuren);
+            AddPayInfo1(payouts, "単勝", hr.PayTansyo, FormatSingleUmaban);
+            AddPayInfo1(payouts, "複勝", hr.PayFukusyo, FormatSingleUmaban);
+            // 枠連はPAY_INFO1を使うが、フィールドの意味が単勝・複勝と異なる。
+            // JV-Data仕様書「４．払戻」より、<枠連払戻>の組番は2バイトで1桁ずつが枠番
+            // （枠は1〜8のため）。単勝・複勝の「馬番」2バイトとは区切り方が違うので、
+            // そのまま出すと "68" のようになり馬連の "6-10" と表記が揃わない。
+            AddPayInfo1(payouts, "枠連", hr.PayWakuren, FormatWakurenKumi);
             AddPayInfo2(payouts, "馬連", hr.PayUmaren);
             AddPayInfo2(payouts, "ワイド", hr.PayWide);
             AddPayInfo2(payouts, "馬単", hr.PayUmatan);
@@ -179,7 +200,8 @@ namespace KeibaDataCollector.Interop
             };
         }
 
-        private static void AddPayInfo1(List<PayoutEntry> list, string ticketType, PAY_INFO1[] entries)
+        private static void AddPayInfo1(
+            List<PayoutEntry> list, string ticketType, PAY_INFO1[] entries, Func<string, string> formatCombination)
         {
             foreach (var e in entries)
             {
@@ -187,11 +209,26 @@ namespace KeibaDataCollector.Interop
                 list.Add(new PayoutEntry
                 {
                     TicketType = ticketType,
-                    Combination = Trim(e.Umaban),
+                    Combination = formatCombination(e.Umaban),
                     Amount = SafeInt(e.Pay),
                     Ninki = SafeInt(e.Ninki),
                 });
             }
+        }
+
+        /// <summary>単勝・複勝の的中馬番(2桁ゼロ埋め、例:"06")を"6"に整形する。</summary>
+        private static string FormatSingleUmaban(string umaban)
+        {
+            var n = SafeInt(umaban);
+            return n > 0 ? n.ToString() : Trim(umaban);
+        }
+
+        /// <summary>枠連の組番(2バイト、1桁ずつが枠番。例:"68")を"6-8"に整形する。</summary>
+        private static string FormatWakurenKumi(string kumi)
+        {
+            var digits = Trim(kumi);
+            if (digits.Length != 2) return digits;
+            return $"{digits[0]}-{digits[1]}";
         }
 
         private static void AddPayInfo2(List<PayoutEntry> list, string ticketType, PAY_INFO2[] entries)

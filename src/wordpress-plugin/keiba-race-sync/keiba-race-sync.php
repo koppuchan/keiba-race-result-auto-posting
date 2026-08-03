@@ -172,6 +172,8 @@ function keiba_race_sync_waku_badge($waku)
 
 function keiba_race_sync_render_card_table($entries)
 {
+    // 列数が多く、馬名も長くなりうるため、狭い画面では折り返さず横スクロールさせる。
+    echo '<div class="keiba-table-scroll">';
     echo '<table class="keiba-table keiba-card-table">';
     echo '<thead><tr>'
         . '<th>枠</th><th>馬番</th><th>馬名</th><th>性齢</th><th>斤量</th><th>騎手</th><th>厩舎</th>'
@@ -188,10 +190,13 @@ function keiba_race_sync_render_card_table($entries)
         echo '</tr>';
     }
     echo '</tbody></table>';
+    echo '</div>';
 }
 
 function keiba_race_sync_render_result_table($entries)
 {
+    // 14列あるため、狭い画面では折り返さず横スクロールさせる。
+    echo '<div class="keiba-table-scroll">';
     echo '<table class="keiba-table keiba-result-table">';
     echo '<thead><tr>'
         . '<th>着順</th><th>枠</th><th>馬番</th><th>馬名</th><th>性齢</th><th>斤量</th><th>騎手</th>'
@@ -220,6 +225,7 @@ function keiba_race_sync_render_result_table($entries)
         echo '</tr>';
     }
     echo '</tbody></table>';
+    echo '</div>';
 }
 
 function keiba_race_sync_render_payout_table($payouts)
