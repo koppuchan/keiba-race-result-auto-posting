@@ -59,8 +59,63 @@ KeibaDataCollector.exe watch    # レース確定監視→結果・払戻を随�
 KeibaDataCollector.exe probe    # 調査用: どのデータ種別で何が取れるか確認（WordPressへ書き込まない）
 ```
 
-同名の `run-*.bat` から起動できます。
-タスクスケジューラで `morning` を毎朝定時実行、`watch` を開催時間帯だけ起動する運用を想定。
+対話的に動かす場合は同名の `run-*.bat` から起動できます。
+
+## 自動運用（タスクスケジューラ）
+
+### 前提：`setup` を実行したユーザーで動かすこと
+
+JV-Link / UmaConn の利用キーは **`setup` を実行したWindowsユーザーのレジストリ**に
+保存されます。別ユーザーでタスクを動かすと認証エラー（-301/-303）になります。
+登録スクリプトは実行中のユーザー自身を登録するため、**VPSに`setup`したユーザーで
+ログインしてから**実行してください。
+
+### 登録
+
+```powershell
+cd (作業ディレクトリ)\src\KeibaDataCollector
+powershell -ExecutionPolicy Bypass -File .\register-scheduled-tasks.ps1
+```
+
+既定で以下の2タスクを作成します（時刻は `-MorningTime` / `-WatchTime` で変更可）。
+
+| タスク名 | 既定時刻 | 内容 |
+| --- | --- | --- |
+| `KeibaDataCollector-Morning` | 毎日 07:00 | 当日の出走表を取得・反映 |
+| `KeibaDataCollector-Watch` | 毎日 09:30 | 確定監視。全レース確定で自動終了 |
+
+`watch` は当日の全レースが確定すると自分で終了するため、停止トリガーは不要です。
+多重起動は禁止設定（同じCOMを二重に開かないため）にしています。
+
+### スケジューラ用スクリプトを別に用意している理由
+
+`run-*.bat` は末尾に `pause` があり、**タスクスケジューラから実行すると
+キー入力待ちでタスクが終了しません**（翌日のトリガーもスキップされる）。
+そのため `scheduled-morning.bat` / `scheduled-watch.bat` を別に用意し、
+`pause` を外して `logs\` へ日付ごとにログ出力するようにしています。
+
+### 確認・トラブルシュート
+
+```powershell
+Get-ScheduledTask -TaskName 'KeibaDataCollector-*' | Format-Table TaskName,State
+Start-ScheduledTask -TaskName 'KeibaDataCollector-Morning'      # 手動で試運転
+Get-ScheduledTaskInfo -TaskName 'KeibaDataCollector-Morning'    # 前回結果(0=成功)
+Get-Content .\logs\morning-*.log -Tail 50                        # 実行ログ
+```
+
+### 無人実行時のダイアログ対策
+
+JV-Link / UmaConn はモーダルダイアログを出すことがあり、**出たままだと
+ユーザー操作待ちでプロセスが停止**します。以下を実施済み／実施してください。
+
+- 払戻ダイアログ：`m_payflag = 1` をコード側で設定済み（`JvSpecComDataSource.Initialize`）
+- 「JRA-VANからのお知らせを表示する」：`setup` のダイアログで**チェックを外す**
+- UmaConn終了時のメモリリークダイアログ：発生する場合あり。**未解決**
+
+上記の懸念があるため、登録スクリプトの既定は「**ログオン時のみ実行**」です。
+VPSにログインしたセッションを維持（RDPは「切断」でログオフしない）して運用してください。
+ダイアログ要因を解消できたら `-RunOnlyWhenLoggedOn:$false` で
+「ログオンしていなくても実行」に切り替えられます（パスワード保存が必要）。
 
 ## データ源ごとの制約（実機調査済み）
 
