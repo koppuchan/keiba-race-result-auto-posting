@@ -23,19 +23,9 @@ namespace KeibaDataCollector.Interop
             return rawRecord.Substring(0, 2);
         }
 
-        // ★診断用: 最初の1件だけ、SEレコードの生の中身(先頭76文字=RECORD_ID+RACE_ID+Wakuban+
-        // Umaban+KettoNum+Bameiの範囲)をHEXダンプする。バイト位置ズレの切り分け用。
-        private static bool _seDebugLogged;
-
         /// <summary>"SE"レコード（馬毎レース情報）を朝一の出走表項目としてパースする。</summary>
         public static (RaceKey Key, RaceCardEntry Entry) ParseRaceCard(string rawRecord)
         {
-            if (!_seDebugLogged)
-            {
-                _seDebugLogged = true;
-                DumpSeRecordDebug(rawRecord);
-            }
-
             var se = new JV_SE_RACE_UMA();
             se.SetDataB(ref rawRecord);
 
@@ -69,10 +59,7 @@ namespace KeibaDataCollector.Interop
                 Kinryo = SafeTenths(se.Futan),
                 JockeyName = Trim(se.KisyuRyakusyo),
                 Time = FormatTime(se.Time),
-                // TODO: ChakusaCDは数値の着差コード。ハナ/クビ/アタマ等の表示文字列への変換表は
-                // JV-Data仕様書のコード表を要確認（今回入手したSDK同梱ドキュメントには見当たらず）。
-                // 誤った着差表示を出すリスクを避けるため、現状は生コードをそのまま出す。
-                ChakusaText = Trim(se.ChakusaCD),
+                ChakusaText = FormatChakusa(se.ChakusaCD),
                 Ninki = SafeInt(se.Ninki),
                 TanshoOdds = SafeTenths(se.Odds),
                 Ushi3F = SafeTenths(se.HaronTimeL3),
@@ -121,17 +108,39 @@ namespace KeibaDataCollector.Interop
             return (ExtractRaceKey(ra.id), passage);
         }
 
-        private static void DumpSeRecordDebug(string rawRecord)
+        /// <summary>着差コード(3バイト: 1バイト目=整数部の馬身数 or 特殊コード、2-3バイト目=分数)を
+        /// 表示文字列に変換する。JV-Data仕様書コード表(2102.着差コード)に基づく。
+        /// 「短クビ」「短アタマ」も仕様書上"クビ""アタマ"と同一コードのため区別できず、
+        /// そのまま"クビ""アタマ"として表示する。</summary>
+        private static string FormatChakusa(string code)
         {
-            Console.WriteLine($"SE診断: 文字列長={rawRecord.Length}（期待値555）");
+            var c = (code ?? string.Empty).PadRight(3).Substring(0, 3);
+            var first = c[0];
 
-            var len = Math.Min(80, rawRecord.Length);
-            var hexBuilder = new System.Text.StringBuilder();
-            for (int i = 0; i < len; i++)
-                hexBuilder.Append(((int)rawRecord[i]).ToString("X2")).Append(' ');
+            switch (first)
+            {
+                case 'A': return "アタマ";
+                case 'D': return "同着";
+                case 'H': return "ハナ";
+                case 'K': return "クビ";
+                case 'T': return "大差";
+                case 'Z': return "10馬身";
+            }
 
-            Console.WriteLine($"SE診断: 先頭{len}文字のHEX=[{hexBuilder}]");
-            Console.WriteLine($"SE診断: 先頭{len}文字のそのまま表示=[{rawRecord.Substring(0, len)}]");
+            var wholePart = first >= '1' && first <= '9' ? first - '0' : 0;
+            string fraction;
+            switch (c.Substring(1, 2))
+            {
+                case "12": fraction = "1/2"; break;
+                case "14": fraction = "1/4"; break;
+                case "34": fraction = "3/4"; break;
+                default: fraction = null; break;
+            }
+
+            if (wholePart == 0 && fraction == null) return string.Empty;
+            if (wholePart == 0) return $"{fraction}馬身";
+            if (fraction == null) return $"{wholePart}馬身";
+            return $"{wholePart} {fraction}馬身";
         }
 
         private static RaceKey ExtractRaceKey(RACE_ID id)
