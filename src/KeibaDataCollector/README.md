@@ -99,9 +99,23 @@ powershell -ExecutionPolicy Bypass -File .\register-scheduled-tasks.ps1
 ```powershell
 Get-ScheduledTask -TaskName 'KeibaDataCollector-*' | Format-Table TaskName,State
 Start-ScheduledTask -TaskName 'KeibaDataCollector-Morning'      # 手動で試運転
-Get-ScheduledTaskInfo -TaskName 'KeibaDataCollector-Morning'    # 前回結果(0=成功)
-Get-Content .\logs\morning-*.log -Tail 50                        # 実行ログ
+Get-ScheduledTaskInfo -TaskName 'KeibaDataCollector-Morning'    # 前回結果
+Get-Content .\logs\morning-*.log -Tail 50 -Encoding UTF8         # 実行ログ
 ```
+
+**ログは必ず `-Encoding UTF8` を付けて読んでください。**
+`scheduled-*.bat` は `chcp 65001` の下でアプリのUTF-8出力をファイルへ流していますが、
+Windows PowerShell 5.1 の `Get-Content` は既定でANSI(CP932)として読むため、
+付けないと日本語が文字化けします（ファイル自体は壊れていません）。
+
+`LastTaskResult` の主な値:
+
+| 値 | 16進 | 意味 |
+| --- | --- | --- |
+| `0` | `0x0` | 正常終了 |
+| `267009` | `0x41301` | **まだ実行中**（エラーではない。少し待って再確認） |
+| `267011` | `0x41303` | 一度も実行されていない |
+| `1` | `0x1` | スクリプトが `exit /b 1` で失敗（ログの `[ERROR]` 行を確認） |
 
 ### 無人実行時のダイアログ対策
 
