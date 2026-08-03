@@ -197,11 +197,17 @@ namespace KeibaDataCollector.Services
             if (!gotAnyRecord) return false;
 
             result.Entries.Sort((a, b) => a.Umaban.CompareTo(b.Umaban));
-            await _wp.PublishRaceResultAsync(result);
-            Console.WriteLine(
-                $"[{_source.SourceName}] {raceKey.AsSlug()} 反映（着順{result.Entries.Count}件, " +
-                $"払戻{result.Payouts.Count}件, コーナー{result.CornerPassage.Count}件, " +
-                $"データ区分[{string.Join(",", seenDataKubun)}]{(isComplete ? " 確定" : " 速報・続報待ち")}）");
+
+            // 内容が前回から変わっていなければWordPressへは送られない。その場合ログも出さない
+            // （速報段階で止まっているレースが毎回同じ行を出力し続けるのを防ぐ）。
+            var published = await _wp.PublishRaceResultAsync(result);
+            if (published)
+            {
+                Console.WriteLine(
+                    $"[{_source.SourceName}] {raceKey.AsSlug()} 反映（着順{result.Entries.Count}件, " +
+                    $"払戻{result.Payouts.Count}件, コーナー{result.CornerPassage.Count}件, " +
+                    $"データ区分[{string.Join(",", seenDataKubun)}]{(isComplete ? " 確定" : " 速報・続報待ち")}）");
+            }
 
             return isComplete;
         }

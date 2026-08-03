@@ -58,22 +58,44 @@ namespace KeibaDataCollector.WordPress
             await SendAsync(existingId, payload);
         }
 
-        public async Task PublishRaceResultAsync(RaceResult result)
+        // レースキーごとに、最後に送信した内容を保持する。watchモードは確定するまで同じレースを
+        // 繰り返しポーリングするため、これが無いと内容が1文字も変わっていなくても
+        // ポーリング間隔ごとにWordPressへ書き込み続けてしまう（実機で確認: 速報段階のまま
+        // 止まっているレースが20秒ごとに同一内容で更新され、投稿の最終更新日時だけが
+        // 無意味に進み続けていた）。
+        private readonly Dictionary<string, string> _lastPublishedResult = new Dictionary<string, string>();
+
+        /// <summary>レース結果をWordPressへ反映する。前回送信時から内容が変わっていない場合は
+        /// 何もせず false を返す（無駄なAPI呼び出しと投稿更新を避けるため）。</summary>
+        public async Task<bool> PublishRaceResultAsync(RaceResult result)
         {
-            var existingId = await FindPostIdByRaceKeyAsync(result.Key.AsSlug());
+            var slug = result.Key.AsSlug();
+            var raceResultJson = JsonConvert.SerializeObject(result.Entries, CamelCaseSettings);
+            var payoutsJson = JsonConvert.SerializeObject(result.Payouts, CamelCaseSettings);
+            var cornerPassageJson = JsonConvert.SerializeObject(result.CornerPassage, CamelCaseSettings);
+
+            var signature = string.Join("", raceResultJson, payoutsJson, cornerPassageJson);
+            if (_lastPublishedResult.TryGetValue(slug, out var previous) && previous == signature)
+                return false;
+
+            var existingId = await FindPostIdByRaceKeyAsync(slug);
             var payload = new
             {
                 title = $"{result.Key.RaceDate:yyyy/MM/dd} {result.Key.TrackCode} {result.Key.RaceNumber}R 結果",
                 status = "publish",
                 meta = new
                 {
-                    race_key = result.Key.AsSlug(),
-                    race_result = JsonConvert.SerializeObject(result.Entries, CamelCaseSettings),
-                    payouts = JsonConvert.SerializeObject(result.Payouts, CamelCaseSettings),
-                    corner_passage = JsonConvert.SerializeObject(result.CornerPassage, CamelCaseSettings),
+                    race_key = slug,
+                    race_result = raceResultJson,
+                    payouts = payoutsJson,
+                    corner_passage = cornerPassageJson,
                 }
             };
             await SendAsync(existingId, payload);
+
+            // 送信に成功した場合のみ記録する（失敗時は次回リトライさせたいため）。
+            _lastPublishedResult[slug] = signature;
+            return true;
         }
 
         private async Task<int?> FindPostIdByRaceKeyAsync(string raceKeySlug)
