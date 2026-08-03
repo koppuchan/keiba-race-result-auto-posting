@@ -65,8 +65,27 @@ public static class JVData_Struct
     /// <returns>バイト配列</returns>
     public static byte[] Str2Byte(ref string myString)
     {
-        // Shift JISに変換する
-        return Encoding.GetEncoding("Shift_JIS").GetBytes(myString);
+        // ★このメソッドのみ、JRA-VAN公式SDK原本から変更している（他は原本のまま）。
+        //
+        // 原本は Shift_JIS.GetBytes(myString) だった。これは「呼び出し側がJV-Dataの生バイト列を
+        // Shift_JISでデコードした文字列を渡してくる」前提で、ここで元のバイト列に戻す意図の実装。
+        // しかし Shift-JIS の バイト→文字列→バイト の往復は可逆ではない。未定義・重複割り当ての
+        // バイト列はデコード時に '?' 等へ潰れ、再エンコードで1バイトに減るため、
+        // そこから後ろのフィールドが全てズレる（レコード長555バイトが崩れる）。
+        //
+        // 実機で確認した症状:
+        //   ・馬体重=[3D2] のように数値項目へ英字が混入
+        //   ・負担重量・単勝人気順・単勝オッズ・後3ハロン・着差コードが 0／空
+        //   ・UmaConn側で「インデックスおよびカウントはバッファー内の場所を参照しなければ
+        //     なりません（パラメーター名:bytes）」= 切り出し位置がバッファ末尾を超える例外
+        //
+        // そこで、呼び出し側（JvSpecComDataSource.Read）では生バイトを Latin-1 で
+        // デコードして「1バイト=1文字」を保った文字列にし、ここでも Latin-1 で戻すことで
+        // 往復を完全に可逆にする。Latin-1 は 0x00〜0xFF を U+0000〜U+00FF に一対一で
+        // 対応させるため、元のバイト列がそのまま復元される。
+        // 日本語への変換は MidB2S が切り出したバイト列に対して Shift_JIS で行うため、
+        // 馬名等の表示は従来どおり正しい。
+        return Encoding.GetEncoding(28591).GetBytes(myString);
     }
 
     #endregion

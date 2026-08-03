@@ -104,9 +104,17 @@ namespace KeibaDataCollector.Interop
             var args = new object[] { new byte[ReadBufferSize], ReadBufferSize, string.Empty };
             int rc = (int)InvokeByRef("Gets", args, isByRef: new[] { true, false, true });
 
+            // ここでは Shift_JIS ではなく Latin-1 でデコードする。
+            // JVData_Struct.cs の SetDataB は、渡された文字列を Str2Byte で再びバイト列へ戻し、
+            // 仕様書どおりのバイト位置で各フィールドを切り出す作りになっている。
+            // Shift_JIS でデコードすると バイト→文字列→バイト の往復が可逆にならず
+            // （未定義バイト列が '?' に潰れて1バイト減る）、以降のフィールドが全てズレる。
+            // Latin-1 は 0x00〜0xFF を U+0000〜U+00FF に一対一対応させるため往復が完全に可逆で、
+            // SetDataB 側が元のバイト列をそのまま復元できる。
+            // 日本語への変換は SetDataB 内の MidB2S が切り出し後に Shift_JIS で行う。
             var rawBytes = args[0] as byte[];
             buffer = (rawBytes != null && rc > 0)
-                ? Encoding.GetEncoding("Shift_JIS").GetString(rawBytes, 0, rc)
+                ? Encoding.GetEncoding(28591).GetString(rawBytes, 0, rc)
                 : string.Empty;
             fileName = args[2] as string ?? string.Empty;
             return rc;
