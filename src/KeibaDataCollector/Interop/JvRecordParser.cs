@@ -23,6 +23,17 @@ namespace KeibaDataCollector.Interop
             return rawRecord.Substring(0, 2);
         }
 
+        /// <summary>レコード共通の「データ区分」（3バイト目、JVData_Struct.csのRECORD_ID.DataKubun相当）を返す。
+        /// RA/SEの速報成績では 3:3着まで確定 → 4:5着まで確定 → 5:全馬着順確定 →
+        /// 6:全馬着順+コーナ通過順 → 7:成績(月曜) と段階的に更新されるため、
+        /// どの段階まで確定したかの判定に使う。</summary>
+        public static string GetDataKubun(string rawRecord)
+        {
+            if (string.IsNullOrEmpty(rawRecord) || rawRecord.Length < 3)
+                return string.Empty;
+            return rawRecord.Substring(2, 1);
+        }
+
         /// <summary>"SE"レコード（馬毎レース情報）を朝一の出走表項目としてパースする。</summary>
         public static (RaceKey Key, RaceCardEntry Entry) ParseRaceCard(string rawRecord)
         {
