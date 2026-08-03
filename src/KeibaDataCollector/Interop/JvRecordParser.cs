@@ -75,6 +75,11 @@ namespace KeibaDataCollector.Interop
                     $"負担重量=[{se.Futan}], 単勝人気順=[{se.Ninki}], 単勝オッズ=[{se.Odds}], " +
                     $"後3ハロン=[{se.HaronTimeL3}], 後4ハロン=[{se.HaronTimeL4}], " +
                     $"着差コード=[{se.ChakusaCD}], 走破タイム=[{se.Time}], 馬体重=[{se.BaTaijyu}]");
+
+                // 負担重量(289)・馬体重(325)まわりだけ想定外の値になるため、その周辺の生バイトを
+                // 仕様書の位置と突き合わせられるようダンプする。rawRecordはLatin-1で
+                // 1バイト=1文字にしてあるので、文字位置＝バイト位置(1始まり)として読める。
+                DumpRawRange(rawRecord, 281, 70);
             }
 
             var entry = new RaceResultEntry
@@ -97,6 +102,26 @@ namespace KeibaDataCollector.Interop
             };
 
             return (ExtractRaceKey(se.id), entry);
+        }
+
+        /// <summary>★診断用（原因特定後に削除する）: 生レコードの指定バイト範囲を
+        /// 「バイト位置: 表示文字(HEX)」形式でダンプする。</summary>
+        private static void DumpRawRange(string rawRecord, int startPos1Based, int length)
+        {
+            var end = Math.Min(startPos1Based - 1 + length, rawRecord.Length);
+            var chars = new System.Text.StringBuilder();
+            var hex = new System.Text.StringBuilder();
+
+            for (int i = startPos1Based - 1; i < end; i++)
+            {
+                var c = rawRecord[i];
+                chars.Append(c >= 0x20 && c < 0x7F ? c : '.');
+                hex.Append(((int)c).ToString("X2")).Append(' ');
+            }
+
+            Console.WriteLine($"SE生バイト診断: {startPos1Based}〜{end}バイト目");
+            Console.WriteLine($"  表示: [{chars}]");
+            Console.WriteLine($"  HEX : {hex}");
         }
 
         /// <summary>"HR"レコード（払戻）をパースする。1レコードに全券種分がまとまっているため
