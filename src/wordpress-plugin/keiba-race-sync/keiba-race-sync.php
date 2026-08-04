@@ -12,6 +12,9 @@ if (!defined('ABSPATH')) {
 
 define('KEIBA_RACE_SYNC_JSON_META_KEYS', array('race_card', 'race_result', 'payouts', 'corner_passage'));
 
+// CSS/JS のキャッシュ更新用。アセットを変更したらここを上げる。
+define('KEIBA_RACE_SYNC_ASSET_VER', '0.2.1');
+
 /**
  * カスタム投稿タイプ「race」を登録。
  * 表示内容はエディタで書くのではなく the_content フィルタで自動生成するため editor はサポートしない。
@@ -117,8 +120,20 @@ add_action('wp_enqueue_scripts', function () {
             'keiba-race-sync',
             plugins_url('assets/keiba-race-sync.css', __FILE__),
             array(),
-            '0.1.0'
+            KEIBA_RACE_SYNC_ASSET_VER
         );
+        return;
+    }
+
+    // レース選択UIを置いたページ。
+    // ショートコード内で wp_enqueue_style を呼ぶだけだと、the_content は wp_head より
+    // 後に実行されるため読み込みが遅れる（キャッシュ/最適化プラグインとの相性も悪い）。
+    // ここで本文を先に調べて、通常のタイミングで読み込ませる。
+    if (is_singular()) {
+        $post = get_post();
+        if ($post && has_shortcode($post->post_content, 'keiba_race_selector')) {
+            keiba_race_sync_enqueue_selector_assets();
+        }
     }
 });
 
@@ -498,13 +513,13 @@ function keiba_race_sync_enqueue_selector_assets()
         'keiba-race-sync',
         plugins_url('assets/keiba-race-sync.css', __FILE__),
         array(),
-        '0.2.0'
+        KEIBA_RACE_SYNC_ASSET_VER
     );
     wp_enqueue_script(
         'keiba-race-selector',
         plugins_url('assets/keiba-race-selector.js', __FILE__),
         array(),
-        '0.2.0',
+        KEIBA_RACE_SYNC_ASSET_VER,
         true
     );
     wp_localize_script('keiba-race-selector', 'keibaRaceSelector', array(
@@ -556,6 +571,25 @@ add_action('rest_api_init', function () {
             );
         },
     ));
+});
+
+/**
+ * 固定ページのスラッグが "race" だと、カスタム投稿タイプ race のアーカイブURLと
+ * 衝突してページを開けなくなる（アーカイブ側が優先される）。
+ * 実際に起きた事象のため、管理画面で気づけるようにしておく。
+ */
+add_action('admin_notices', function () {
+    $conflict = get_page_by_path('race', OBJECT, 'page');
+    if (!$conflict) {
+        return;
+    }
+
+    echo '<div class="notice notice-warning"><p><strong>Keiba Race Sync:</strong> ';
+    echo '固定ページ「' . esc_html(get_the_title($conflict)) . '」のスラッグが <code>race</code> のため、';
+    echo 'レース一覧アーカイブ（<code>/race/</code>）と衝突しページを表示できません。';
+    echo '<a href="' . esc_url(get_edit_post_link($conflict)) . '">スラッグを変更</a>してください';
+    echo '（例: <code>today-races</code>）。';
+    echo '</p></div>';
 });
 
 /* ==========================================================================
