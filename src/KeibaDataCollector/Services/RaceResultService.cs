@@ -45,15 +45,36 @@ namespace KeibaDataCollector.Services
         // 「待機中」と「詰まっている」の区別がつかない。一定周期ごとに状況を出力する。
         private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromMinutes(2);
 
+        // レース一覧を取り直す間隔。起動時に1回だけ取得する作りだと、
+        // その時点でまだ当日のレースが配信されていなければ「0件」で即終了し、
+        // その日は一切反映されないまま終わってしまう（実機で本日分が0件のまま
+        // 終了する事象が発生）。定期的に取り直して拾い直す。
+        private static readonly TimeSpan RediscoverInterval = TimeSpan.FromMinutes(20);
+
+        // その日の監視を打ち切る時刻。地方競馬のナイター（概ね21時台まで）を
+        // 見終えてから終了し、翌日のトリガーを妨げないようにする。
+        private static readonly TimeSpan DailyCutoff = TimeSpan.FromHours(23.5);
+
         public async Task RunWatchLoopAsync(DateTime targetDate, CancellationToken ct)
         {
-            var pending = DiscoverTodaysRaceKeys(targetDate);
-            Console.WriteLine($"[{_source.SourceName}] {targetDate:yyyy-MM-dd} 監視対象レース {pending.Count}件を検出。");
+            // 確定済みのレースキー。取り直しのたびに再登録されるのを防ぐ。
+            var completed = new HashSet<string>();
+            var pending = new List<RaceKey>();
 
             var lastHeartbeat = DateTime.Now;
+            var lastDiscovery = DateTime.MinValue;
+            var cutoff = targetDate.Date.Add(DailyCutoff);
 
-            while (!ct.IsCancellationRequested && pending.Count > 0)
+            while (!ct.IsCancellationRequested && DateTime.Now < cutoff)
             {
+                // 起動直後と、以降は一定間隔でレース一覧を取り直す。
+                // 開催途中で追加されたレースや、起動が早すぎた場合も拾える。
+                if (DateTime.Now - lastDiscovery >= RediscoverInterval)
+                {
+                    lastDiscovery = DateTime.Now;
+                    MergeDiscoveredRaces(targetDate, pending, completed);
+                }
+
                 for (int i = pending.Count - 1; i >= 0; i--)
                 {
                     if (ct.IsCancellationRequested) break;
@@ -74,23 +95,74 @@ namespace KeibaDataCollector.Services
                     if (confirmed)
                     {
                         Console.WriteLine($"[{_source.SourceName}] {raceKey.AsSlug()} 払戻確定・反映完了。監視対象から除外。");
+                        completed.Add(raceKey.AsSlug());
                         pending.RemoveAt(i);
                     }
+                }
+
+                // 全部確定したら終了。ただし1件も見つかっていない状態での終了はしない
+                // （まだ配信されていないだけの可能性があるため、打ち切り時刻まで粘る）。
+                if (pending.Count == 0 && completed.Count > 0)
+                {
+                    break;
                 }
 
                 if (DateTime.Now - lastHeartbeat >= HeartbeatInterval)
                 {
                     Console.WriteLine(
-                        $"[{_source.SourceName}] 監視中... 未確定{pending.Count}件残り " +
+                        $"[{_source.SourceName}] 監視中... 未確定{pending.Count}件 / 確定済み{completed.Count}件 " +
                         $"（{DateTime.Now:HH:mm:ss}時点、ポーリングは生きています）。");
                     lastHeartbeat = DateTime.Now;
                 }
 
-                if (pending.Count > 0)
-                    await Task.Delay(_pollInterval, ct);
+                await Task.Delay(_pollInterval, ct);
             }
 
-            Console.WriteLine($"[{_source.SourceName}] {targetDate:yyyy-MM-dd} 監視終了（全レース確定、またはキャンセル）。");
+            Console.WriteLine(
+                $"[{_source.SourceName}] {targetDate:yyyy-MM-dd} 監視終了" +
+                $"（確定{completed.Count}件 / 未確定{pending.Count}件）。");
+        }
+
+        /// <summary>当日のレース一覧を取り直し、未確定かつ未登録のものを監視対象に足す。
+        /// 取得に失敗しても、既に監視中のレースは止めない。</summary>
+        private void MergeDiscoveredRaces(DateTime targetDate, List<RaceKey> pending, HashSet<string> completed)
+        {
+            List<RaceKey> discovered;
+            try
+            {
+                discovered = DiscoverTodaysRaceKeys(targetDate);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[{_source.SourceName}] レース一覧の取り直しに失敗（監視は継続）: {ex.Message}");
+                return;
+            }
+
+            var known = new HashSet<string>(pending.Select(k => k.AsSlug()));
+            var added = 0;
+
+            foreach (var raceKey in discovered)
+            {
+                var slug = raceKey.AsSlug();
+                if (completed.Contains(slug) || known.Contains(slug)) continue;
+
+                pending.Add(raceKey);
+                known.Add(slug);
+                added++;
+            }
+
+            if (added > 0)
+            {
+                Console.WriteLine(
+                    $"[{_source.SourceName}] {targetDate:yyyy-MM-dd} 監視対象に{added}レース追加" +
+                    $"（未確定{pending.Count}件 / 確定済み{completed.Count}件）。");
+            }
+            else if (pending.Count == 0 && completed.Count == 0)
+            {
+                Console.WriteLine(
+                    $"[{_source.SourceName}] {targetDate:yyyy-MM-dd} 対象レースがまだ配信されていません。" +
+                    $"{RediscoverInterval.TotalMinutes:0}分後に再確認します。");
+            }
         }
 
         /// <summary>
