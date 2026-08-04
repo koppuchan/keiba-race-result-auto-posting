@@ -294,15 +294,32 @@ function keiba_race_sync_render_result_table($entries, $predictions = array())
 
 function keiba_race_sync_render_payout_table($payouts)
 {
+    // 組み合わせの人気順は、地方競馬DATAでは配信されず常に0になる（実データで確認）。
+    // 全件0のまま「0人気」と出すと誤情報に見えるため、その場合は列ごと出さない。
+    $has_ninki = false;
+    foreach ($payouts as $p) {
+        if ((int) ($p['ninki'] ?? 0) > 0) {
+            $has_ninki = true;
+            break;
+        }
+    }
+
     echo '<table class="keiba-table keiba-payout-table">';
     echo '<caption>払戻金</caption>';
-    echo '<thead><tr><th>券種</th><th>組み合わせ</th><th>金額</th><th>人気</th></tr></thead><tbody>';
+    echo '<thead><tr><th>券種</th><th>組み合わせ</th><th>金額</th>';
+    if ($has_ninki) {
+        echo '<th>人気</th>';
+    }
+    echo '</tr></thead><tbody>';
     foreach ($payouts as $p) {
         echo '<tr>';
         echo '<td>' . esc_html($p['ticketType'] ?? '') . '</td>';
         echo '<td>' . esc_html($p['combination'] ?? '') . '</td>';
         echo '<td>' . esc_html(number_format((float) ($p['amount'] ?? 0))) . '円</td>';
-        echo '<td>' . esc_html($p['ninki'] ?? '') . '人気</td>';
+        if ($has_ninki) {
+            $ninki = (int) ($p['ninki'] ?? 0);
+            echo '<td>' . ($ninki > 0 ? esc_html($ninki) . '人気' : '&mdash;') . '</td>';
+        }
         echo '</tr>';
     }
     echo '</tbody></table>';
