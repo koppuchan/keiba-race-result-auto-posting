@@ -13,3 +13,9 @@ logs/
 # src/KeibaDataCollector/Interop/JvDataSdk/ に配置してそちらをコミット対象にする。
 /JRA-VAN Data Lab. SDK Ver*/
 /JVDTLABSDK*.zip
+
+# プラグインの配布用パッケージと、その展開結果。
+# 本体は src/wordpress-plugin/keiba-race-sync/ のみ。直下にコピーを置くと
+# どちらを編集すべきか分からなくなるため、追跡しない。
+/keiba-race-sync.zip
+/keiba-race-sync/
