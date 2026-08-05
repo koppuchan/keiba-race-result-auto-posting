@@ -112,9 +112,14 @@ namespace KeibaDataCollector.Services
 
                 if (DateTime.Now - lastHeartbeat >= HeartbeatInterval)
                 {
+                    // メモリ使用量も出す。JVGets/NVGetsへ渡すバッファの扱いを誤ると
+                    // 1レコードごとに解放されない領域が積み上がり、数時間後に
+                    // ヒープ破損でプロセスごと落ちる（実機で発生）。
+                    // 値が単調に増え続けていないかを、この行だけで追えるようにしておく。
+                    var workingSetMb = Environment.WorkingSet / 1024d / 1024d;
                     Console.WriteLine(
                         $"[{_source.SourceName}] 監視中... 未確定{pending.Count}件 / 確定済み{completed.Count}件 " +
-                        $"（{DateTime.Now:HH:mm:ss}時点、ポーリングは生きています）。");
+                        $"（{DateTime.Now:HH:mm:ss}時点、メモリ{workingSetMb:0}MB）。");
                     lastHeartbeat = DateTime.Now;
                 }
 
