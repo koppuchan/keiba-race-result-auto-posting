@@ -100,12 +100,12 @@ namespace KeibaDataCollector.Services
                     }
                 }
 
-                // 全部確定したら終了。ただし1件も見つかっていない状態での終了はしない
-                // （まだ配信されていないだけの可能性があるため、打ち切り時刻まで粘る）。
-                if (pending.Count == 0 && completed.Count > 0)
-                {
-                    break;
-                }
+                // ここで「未確定が0になったら終了」としてはいけない。
+                // レース一覧(RAレコード)は当日ぶんが一度に揃うとは限らず、開催の進行に
+                // 合わせて順次配信される。実機で確認: 起動時に園田1Rしか一覧に無く、
+                // それを反映した時点で未確定0・確定1となり監視を終了してしまい、
+                // 以降のレースが1件も反映されないまま1日が終わった。
+                // 未確定が0でも打ち切り時刻まで待機し、取り直しで現れたレースを拾う。
 
                 if (DateTime.Now - lastHeartbeat >= HeartbeatInterval)
                 {
@@ -151,18 +151,12 @@ namespace KeibaDataCollector.Services
                 added++;
             }
 
-            if (added > 0)
-            {
-                Console.WriteLine(
-                    $"[{_source.SourceName}] {targetDate:yyyy-MM-dd} 監視対象に{added}レース追加" +
-                    $"（未確定{pending.Count}件 / 確定済み{completed.Count}件）。");
-            }
-            else if (pending.Count == 0 && completed.Count == 0)
-            {
-                Console.WriteLine(
-                    $"[{_source.SourceName}] {targetDate:yyyy-MM-dd} 対象レースがまだ配信されていません。" +
-                    $"{RediscoverInterval.TotalMinutes:0}分後に再確認します。");
-            }
+            // レース一覧は開催の進行に合わせて増えていくため、毎回の取得総数を残す。
+            // 「一覧に何件見えているのか」が分からないと、反映漏れの切り分けができない。
+            Console.WriteLine(
+                $"[{_source.SourceName}] {targetDate:yyyy-MM-dd} レース一覧を取得: {discovered.Count}件" +
+                (added > 0 ? $"（うち{added}件を監視対象に追加）" : "（追加なし）") +
+                $" 未確定{pending.Count}件 / 確定済み{completed.Count}件");
         }
 
         /// <summary>
