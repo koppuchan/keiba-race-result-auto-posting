@@ -94,6 +94,25 @@ powershell -ExecutionPolicy Bypass -File .\register-scheduled-tasks.ps1
 そのため `scheduled-morning.bat` / `scheduled-watch.bat` を別に用意し、
 `pause` を外して `logs\` へ日付ごとにログ出力するようにしています。
 
+### 更新の反映（推奨手順）
+
+修正を本番へ反映するときは、次のスクリプトを使ってください。
+
+```powershell
+cd (作業ディレクトリ)\src\KeibaDataCollector
+powershell -ExecutionPolicy Bypass -File .\redeploy-watch.ps1
+```
+
+「タスク停止 → 残存プロセス終了 → git pull → ビルド → 監視再開」をこの順で行います。
+
+手作業で行うと次を踏みやすいため、スクリプト化しています。
+
+- `Stop-ScheduledTask` は起動用バッチを止めますが、そこから起動された
+  `KeibaDataCollector.exe` が残ることがあります。残っているとexeを上書きできず、
+  `別のプロセスが使用中のため…にコピーできませんでした` でビルドが失敗します。
+- ビルド失敗に気づかず監視を再開すると、**修正前のexeのまま動き続けます**。
+  スクリプトはビルド失敗時に再開せず中断します。
+
 ### 確認・トラブルシュート
 
 ```powershell
