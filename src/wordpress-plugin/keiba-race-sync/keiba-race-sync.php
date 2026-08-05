@@ -3,7 +3,7 @@
  * Plugin Name: Keiba Race Sync
  * Description: JV-Link/UmaConn連携の常駐アプリ（KeibaDataCollector）から送られる出走表・結果データを受け取り、
  *              カスタム投稿タイプ「race」として保存・表示する。
- * Version: 0.1.3
+ * Version: 0.1.4
  */
 
 if (!defined('ABSPATH')) {
@@ -11,6 +11,9 @@ if (!defined('ABSPATH')) {
 }
 
 define('KEIBA_RACE_SYNC_JSON_META_KEYS', array('race_card', 'race_result', 'payouts', 'corner_passage'));
+
+// 稼働中のバージョン確認用（/wp-json/keiba-race-sync/v1/health で参照）。
+define('KEIBA_RACE_SYNC_VERSION', '0.1.4');
 
 // CSS/JS のキャッシュ更新用。アセットを変更したらここを上げる。
 define('KEIBA_RACE_SYNC_ASSET_VER', '0.2.2');
@@ -112,10 +115,19 @@ function keiba_race_sync_queue_purge($post_id)
     if (!$hooked) {
         $hooked = true;
         add_action('shutdown', function () use (&$queue) {
+            $deleted = 0;
             foreach (array_keys($queue) as $id) {
-                keiba_race_sync_purge_post_cache($id);
+                $deleted += (int) keiba_race_sync_purge_post_cache($id);
             }
-            keiba_race_sync_purge_listing_pages();
+            $deleted += (int) keiba_race_sync_purge_listing_pages();
+
+            // 破棄が本当に行われたかを外から確認できるように記録する。
+            // これが無かったため、キャッシュが消えない原因の切り分けに時間を要した。
+            update_option('keiba_race_sync_last_purge', array(
+                'time' => current_time('mysql'),
+                'posts' => count($queue),
+                'files' => $deleted,
+            ), false);
         }, 100);
     }
 }
@@ -156,8 +168,68 @@ function keiba_race_sync_purge_post_cache($post_id)
     do_action('litespeed_purge_post', $post_id);          // LiteSpeed Cache
     do_action('cache_enabler_clear_page_cache_by_post', $post_id);
 
+    // 上のAPIが効かなかった場合の保険。実測で、rocket_clean_post を呼んでも
+    // キャッシュファイルが残り続ける事象が発生したため、ファイルを直接削除する。
+    $deleted = keiba_race_sync_delete_rocket_files($post_id);
+
     // サーバー側キャッシュ等、ここで拾えない仕組み向けの拡張点。
     do_action('keiba_race_sync_purge_post', $post_id);
+
+    return $deleted;
+}
+
+/**
+ * WP Rocket が書き出したページキャッシュのファイルを直接削除する。
+ *
+ * rocket_clean_post() を呼んでも消えないことが実機で確認されたため、
+ * プラグインのAPIに頼らず、キャッシュの実体を消す経路も用意する。
+ * 保存場所は wp-content/cache/wp-rocket/<ホスト名>/<パス>/ で、
+ * その配下に index.html / index-https.html などが置かれる。
+ *
+ * 消してよいのはキャッシュ配下だけなので、
+ * 実パスがキャッシュルート配下であることを必ず確かめてから削除する。
+ */
+function keiba_race_sync_delete_rocket_files($post_id)
+{
+    if (!defined('WP_CONTENT_DIR')) {
+        return 0;
+    }
+
+    $root = realpath(WP_CONTENT_DIR . '/cache/wp-rocket');
+    if ($root === false) {
+        return 0; // WP Rocket が無い環境。
+    }
+
+    $permalink = get_permalink($post_id);
+    if (!$permalink) {
+        return 0;
+    }
+    $parts = wp_parse_url($permalink);
+    if (empty($parts['host'])) {
+        return 0;
+    }
+    $path = isset($parts['path']) ? $parts['path'] : '/';
+
+    // パーマリンクは日本語スラッグでURLエンコードされるが、
+    // WP Rocket はエンコードされたままのディレクトリ名で保存する。
+    $dir = realpath($root . '/' . $parts['host'] . $path);
+    if ($dir === false) {
+        return 0; // まだキャッシュされていない。
+    }
+
+    // キャッシュルートの外を消してしまわないための保険。
+    // ルート直下そのもの（トップページを一覧に使っている場合）は許可する。
+    if ($dir !== $root && strpos($dir, $root . DIRECTORY_SEPARATOR) !== 0) {
+        return 0;
+    }
+
+    $deleted = 0;
+    foreach ((array) glob($dir . '/index*.html*') as $file) {
+        if (is_file($file) && @unlink($file)) {
+            $deleted++;
+        }
+    }
+    return $deleted;
 }
 
 /**
@@ -194,10 +266,43 @@ function keiba_race_sync_listing_page_ids()
 
 function keiba_race_sync_purge_listing_pages()
 {
+    $deleted = 0;
     foreach (keiba_race_sync_listing_page_ids() as $id) {
-        keiba_race_sync_purge_post_cache($id);
+        $deleted += (int) keiba_race_sync_purge_post_cache($id);
     }
+    return $deleted;
 }
+
+/**
+ * 稼働中のバージョンとキャッシュ破棄の実績を外から確認するためのエンドポイント。
+ *
+ *   GET /wp-json/keiba-race-sync/v1/health
+ *
+ * 用意した理由: サーバー上のPHPはHTTPからは読めないため、
+ * 「どのバージョンが動いているのか」を推測するしかなく、
+ * 不具合の切り分けが遅れた。バージョンと最終破棄時刻が見えれば一目で分かる。
+ * 公開情報のみを返す（投稿内容・設定・認証情報は含めない）。
+ */
+add_action('rest_api_init', function () {
+    register_rest_route('keiba-race-sync/v1', '/health', array(
+        'methods' => 'GET',
+        'permission_callback' => '__return_true',
+        'callback' => function () {
+            return array(
+                'version' => KEIBA_RACE_SYNC_VERSION,
+                'assetVersion' => KEIBA_RACE_SYNC_ASSET_VER,
+                'lastPurge' => get_option('keiba_race_sync_last_purge', null),
+                'rocketCacheRoot' => (realpath(WP_CONTENT_DIR . '/cache/wp-rocket') !== false),
+                'purgeApis' => array(
+                    'rocket' => function_exists('rocket_clean_post'),
+                    'superCache' => function_exists('wp_cache_post_change'),
+                    'w3tc' => function_exists('w3tc_flush_post'),
+                    'fastest' => function_exists('wpfc_clear_post_cache_by_id'),
+                ),
+            );
+        },
+    ));
+});
 
 // ページを編集したら、ショートコードの有無が変わっている可能性があるので拾い直す。
 add_action('save_post', function ($post_id, $post) {
