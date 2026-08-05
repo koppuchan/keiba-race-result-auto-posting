@@ -3,7 +3,7 @@
  * Plugin Name: Keiba Race Sync
  * Description: JV-Link/UmaConn連携の常駐アプリ（KeibaDataCollector）から送られる出走表・結果データを受け取り、
  *              カスタム投稿タイプ「race」として保存・表示する。
- * Version: 0.1.3
+ * Version: 0.1.2
  */
 
 if (!defined('ABSPATH')) {
@@ -78,133 +78,6 @@ add_action('init', function () {
         },
     ));
 });
-
-/* ------------------------------------------------------------------------- *
- * ページキャッシュの破棄
- *
- * 結果を書き込んでもページキャッシュが残っていると、訪問者には朝に生成された
- * 「出走表だけ」のHTMLが配信され続ける。データは正しいのにサイトには出ない。
- *
- * 実際に発生した障害（2026-08-05）:
- *   投稿は17:22に結果込みで更新されていたが、WP Rocketが08:22〜10:17に生成した
- *   HTMLを返し続けていた。キャッシュが無かったレースだけが着順を表示していたため、
- *   「一部のレースだけ更新される」という分かりにくい形でお客様に見えていた。
- *
- * キャッシュプラグインは投稿の更新時に自動破棄する作りだが、収集アプリはRESTで
- * メタだけを更新するため、その破棄が働かないことがある。ここで明示的に破棄する。
- * ------------------------------------------------------------------------- */
-
-/**
- * 1リクエスト内で同じ投稿を何度も破棄しないよう溜めてからまとめて処理する。
- * 1レースあたりメタを4〜5個更新するため、素直に書くと同じ破棄を5回呼ぶことになる。
- */
-function keiba_race_sync_queue_purge($post_id)
-{
-    static $hooked = false;
-    static $queue = array();
-
-    $post_id = (int) $post_id;
-    if ($post_id <= 0 || isset($queue[$post_id])) {
-        return;
-    }
-    $queue[$post_id] = true;
-
-    if (!$hooked) {
-        $hooked = true;
-        add_action('shutdown', function () use (&$queue) {
-            foreach (array_keys($queue) as $id) {
-                keiba_race_sync_purge_post_cache($id);
-            }
-            keiba_race_sync_purge_listing_pages();
-        }, 100);
-    }
-}
-
-foreach (array('updated_post_meta', 'added_post_meta') as $keiba_meta_hook) {
-    add_action($keiba_meta_hook, function ($meta_id, $object_id, $meta_key) {
-        $watched = array_merge(KEIBA_RACE_SYNC_JSON_META_KEYS, array('predictions'));
-        if (!in_array($meta_key, $watched, true)) {
-            return;
-        }
-        if (get_post_type($object_id) !== 'race') {
-            return;
-        }
-        keiba_race_sync_queue_purge($object_id);
-    }, 10, 3);
-}
-unset($keiba_meta_hook);
-
-/**
- * 個別レースページのキャッシュを破棄する。
- * どのキャッシュプラグインが入っているか環境側の都合で変わりうるので、
- * 主要なものを「あれば呼ぶ」形で並べている。無ければ何も起きない。
- */
-function keiba_race_sync_purge_post_cache($post_id)
-{
-    if (function_exists('rocket_clean_post')) {          // WP Rocket
-        rocket_clean_post($post_id);
-    }
-    if (function_exists('wp_cache_post_change')) {       // WP Super Cache
-        wp_cache_post_change($post_id);
-    }
-    if (function_exists('w3tc_flush_post')) {            // W3 Total Cache
-        w3tc_flush_post($post_id);
-    }
-    if (function_exists('wpfc_clear_post_cache_by_id')) { // WP Fastest Cache
-        wpfc_clear_post_cache_by_id($post_id);
-    }
-    do_action('litespeed_purge_post', $post_id);          // LiteSpeed Cache
-    do_action('cache_enabler_clear_page_cache_by_post', $post_id);
-
-    // サーバー側キャッシュ等、ここで拾えない仕組み向けの拡張点。
-    do_action('keiba_race_sync_purge_post', $post_id);
-}
-
-/**
- * レース選択UIを置いたページのキャッシュも破棄する。
- * お客様が実際にご覧になるのは個別ページより一覧ページ（/today-races/ など）のため、
- * ここが古いままだと「結果が出ていない」と見える。
- *
- * 対象ページはショートコードの有無で判定し、毎回の全件走査を避けるため一時保存する。
- */
-function keiba_race_sync_listing_page_ids()
-{
-    $ids = get_transient('keiba_race_sync_listing_pages');
-    if (is_array($ids)) {
-        return $ids;
-    }
-
-    $ids = array();
-    $pages = get_posts(array(
-        'post_type' => array('page', 'post'),
-        'post_status' => 'publish',
-        'posts_per_page' => 200,
-        'no_found_rows' => true,
-        'suppress_filters' => true,
-    ));
-    foreach ($pages as $page) {
-        if (has_shortcode($page->post_content, 'keiba_race_selector')) {
-            $ids[] = (int) $page->ID;
-        }
-    }
-
-    set_transient('keiba_race_sync_listing_pages', $ids, HOUR_IN_SECONDS);
-    return $ids;
-}
-
-function keiba_race_sync_purge_listing_pages()
-{
-    foreach (keiba_race_sync_listing_page_ids() as $id) {
-        keiba_race_sync_purge_post_cache($id);
-    }
-}
-
-// ページを編集したら、ショートコードの有無が変わっている可能性があるので拾い直す。
-add_action('save_post', function ($post_id, $post) {
-    if ($post instanceof WP_Post && in_array($post->post_type, array('page', 'post'), true)) {
-        delete_transient('keiba_race_sync_listing_pages');
-    }
-}, 10, 2);
 
 /**
  * JSON文字列メタのサニタイズ。不正なJSONは空配列にフォールバックし、壊れた表示を防ぐ。

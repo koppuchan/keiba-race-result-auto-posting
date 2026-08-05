@@ -150,6 +150,40 @@ VPSにログインしたセッションを維持（RDPは「切断」でログ�
 ダイアログ要因を解消できたら `-RunOnlyWhenLoggedOn:$false` で
 「ログオンしていなくても実行」に切り替えられます（パスワード保存が必要）。
 
+## ページキャッシュに注意（実際に障害になった）
+
+サイトにはWP Rocketが入っており、**投稿を更新してもキャッシュが残っていると
+朝に生成された「出走表だけ」のHTMLが配信され続けます**。
+
+2026-08-05の実測:
+
+| ページ | キャッシュ生成 | 投稿の更新 | 着順の表示 |
+| --- | --- | --- | --- |
+| 園田12R | 08:22 | 17:22 | されない |
+| 船橋5R | 10:15 | 17:22 | されない |
+| 門別6R | キャッシュ無し | 17:22 | される |
+
+キャッシュが無いページだけ正しく表示されるため、**「一部のレースだけ更新される」**
+という分かりにくい形で表面化します。収集アプリ側のログが「反映完了」でも、
+サイトには出ていないことがある点に注意してください。
+
+プラグイン v0.1.3 以降は、メタ更新時に該当レースページとレース一覧ページの
+キャッシュを自動で破棄します（`keiba_race_sync_purge_post_cache`）。
+WP Rocket / WP Super Cache / W3 Total Cache / WP Fastest Cache / LiteSpeed /
+Cache Enabler に対応。他の仕組みを使う場合は `keiba_race_sync_purge_post`
+アクションで追加できます。
+
+確認方法（キャッシュを迂回すると出るなら、キャッシュが原因）:
+
+```powershell
+# 通常アクセス
+(Invoke-WebRequest 'https://www.keiba-tips.top/race/<slug>/' -UseBasicParsing).Content -match 'keiba-result-table'
+# クエリ付き＝キャッシュ迂回
+(Invoke-WebRequest 'https://www.keiba-tips.top/race/<slug>/?nocache=1' -UseBasicParsing).Content -match 'keiba-result-table'
+```
+
+HTML末尾の `Debug: cached@<unixtime>` でキャッシュ生成時刻が分かります。
+
 ## データ源ごとの項目の入り方（実測）
 
 地方競馬（UmaConn）は、成績レコード(SE)に入れてくる項目が**競馬場によって異なります**。
