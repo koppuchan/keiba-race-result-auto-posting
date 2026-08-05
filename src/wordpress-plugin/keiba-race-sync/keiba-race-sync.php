@@ -3,7 +3,7 @@
  * Plugin Name: Keiba Race Sync
  * Description: JV-Link/UmaConn連携の常駐アプリ（KeibaDataCollector）から送られる出走表・結果データを受け取り、
  *              カスタム投稿タイプ「race」として保存・表示する。
- * Version: 0.1.1
+ * Version: 0.1.2
  */
 
 if (!defined('ABSPATH')) {
@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
 define('KEIBA_RACE_SYNC_JSON_META_KEYS', array('race_card', 'race_result', 'payouts', 'corner_passage'));
 
 // CSS/JS のキャッシュ更新用。アセットを変更したらここを上げる。
-define('KEIBA_RACE_SYNC_ASSET_VER', '0.2.1');
+define('KEIBA_RACE_SYNC_ASSET_VER', '0.2.2');
 
 /**
  * カスタム投稿タイプ「race」を登録。
@@ -249,8 +249,42 @@ function keiba_race_sync_prediction_for($predictions, $umaban)
     return '';
 }
 
+/**
+ * 着順テーブル用に並べ替える。
+ *
+ * データ提供元（JV-Link/UmaConn）は成績レコードを馬番順で返すため、そのまま出すと
+ * 「着順」列が 12着→7着→9着… と並び、着順表として読めない。
+ * 取消・除外・競走中止は着順が付かない（0）ので、末尾に馬番順でまとめる。
+ *
+ * 保存済みのデータには手を加えず表示時に並べ替えるので、
+ * 公開済みのレースもこの修正だけで正しい並びになる。
+ */
+function keiba_race_sync_sort_by_finish($entries)
+{
+    usort($entries, function ($a, $b) {
+        $ca = isset($a['chakujun']) ? (int) $a['chakujun'] : 0;
+        $cb = isset($b['chakujun']) ? (int) $b['chakujun'] : 0;
+
+        // 着順なし(0)は必ず後ろ。両方0なら馬番順。
+        if ($ca === 0 || $cb === 0) {
+            if ($ca !== $cb) {
+                return $ca === 0 ? 1 : -1;
+            }
+            return ((int) ($a['umaban'] ?? 0)) - ((int) ($b['umaban'] ?? 0));
+        }
+        if ($ca !== $cb) {
+            return $ca - $cb;
+        }
+        // 同着は馬番順で安定させる。
+        return ((int) ($a['umaban'] ?? 0)) - ((int) ($b['umaban'] ?? 0));
+    });
+
+    return $entries;
+}
+
 function keiba_race_sync_render_result_table($entries, $predictions = array())
 {
+    $entries = keiba_race_sync_sort_by_finish($entries);
     $show_prediction = !empty($predictions);
 
     // 14列あるため、狭い画面では折り返さず横スクロールさせる。
@@ -268,8 +302,13 @@ function keiba_race_sync_render_result_table($entries, $predictions = array())
         $zogen = isset($e['bataijuuZogen']) ? (int) $e['bataijuuZogen'] : 0;
         $zogen_text = $zogen > 0 ? "(+{$zogen})" : ($zogen < 0 ? "({$zogen})" : '(0)');
 
-        echo '<tr>';
-        echo '<td>' . esc_html($e['chakujun'] ?? '') . '</td>';
+        // 取消・除外・競走中止は着順が付かず0で入ってくる。そのまま出すと
+        // 「0着」という存在しない着順に見えるため、印字しない。
+        $chakujun = isset($e['chakujun']) ? (int) $e['chakujun'] : 0;
+        $chakujun_text = $chakujun > 0 ? (string) $chakujun : '－';
+
+        echo '<tr' . ($chakujun > 0 ? '' : ' class="keiba-no-finish"') . '>';
+        echo '<td>' . esc_html($chakujun_text) . '</td>';
         echo '<td>' . keiba_race_sync_waku_badge($e['waku'] ?? '') . '</td>';
         echo '<td>' . esc_html($e['umaban'] ?? '') . '</td>';
         echo '<td>' . esc_html($e['horseName'] ?? '') . '</td>';
