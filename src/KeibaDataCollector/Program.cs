@@ -8,12 +8,39 @@ namespace KeibaDataCollector
 {
     internal static class Program
     {
+        // 異常があったかどうか。タスクスケジューラの「前回の実行結果」に反映させる。
+        // これが常に0だと、1日分まるごと反映されていなくても「成功」に見えてしまい、
+        // お客様からの指摘で初めて気づくことになる（実際に発生した）。
+        private static bool _hadFailure;
+
         // COM(ActiveX)相手はSTAスレッドが前提のため必須。
         [STAThread]
-        private static void Main(string[] args)
+        private static int Main(string[] args)
         {
             var mode = args.Length > 0 ? args[0] : "help";
 
+            try
+            {
+                Run(mode);
+            }
+            catch (Exception ex)
+            {
+                // ここまで漏れてくるのは設定不備など、処理を始める前の失敗。
+                // 未処理例外のまま落とすと、サーバーではWindowsのエラー報告ダイアログが
+                // 出てタスクが終了しなくなる恐れがあるため、必ず捕まえて終了コードで返す。
+                LogFailure("起動", "処理を開始できませんでした", ex);
+            }
+
+            if (_hadFailure)
+            {
+                Console.WriteLine("異常終了: 上記のエラーを確認してください。");
+                return 1;
+            }
+            return 0;
+        }
+
+        private static void Run(string mode)
+        {
             // WordPressClient はここでは作らない: setup モードはWordPressに一切繋がないため、
             // WordPressUser/WordPressAppPassword 未設定でも setup だけは実行できるようにする。
             using (var jvLink = new JvSpecComDataSource(AppConfig.JvLinkProgId, "JV", "JV-Link(中央競馬)"))
@@ -51,7 +78,20 @@ namespace KeibaDataCollector
                             var jvResultTask = RunWatchFor(jvLink, wp, cts.Token);
                             var umaResultTask = RunWatchFor(umaConn, wp, cts.Token);
 
-                            System.Threading.Tasks.Task.WaitAll(jvResultTask, umaResultTask);
+                            try
+                            {
+                                System.Threading.Tasks.Task.WaitAll(jvResultTask, umaResultTask);
+                            }
+                            catch (AggregateException ex)
+                            {
+                                // Ctrl+C 時の Task.Delay 由来のキャンセルは正常系。
+                                // それ以外は握りつぶさず記録する。
+                                foreach (var inner in ex.Flatten().InnerExceptions)
+                                {
+                                    if (inner is OperationCanceledException) continue;
+                                    LogFailure("watch", "監視タスクが異常終了しました", inner);
+                                }
+                            }
                         }
                         break;
                     }
@@ -81,6 +121,15 @@ namespace KeibaDataCollector
                         break;
                 }
             }
+        }
+
+        /// <summary>例外の内容をログに残す。原因調査には型と発生箇所が要るため、
+        /// Messageだけでなく例外の全文（スタックトレース含む）を出す。</summary>
+        private static void LogFailure(string sourceName, string what, Exception ex)
+        {
+            _hadFailure = true;
+            Console.WriteLine($"[{sourceName}] {what}: {ex.GetType().Name}: {ex.Message}");
+            Console.WriteLine(ex.ToString());
         }
 
         private static void RunProbeFor(JvSpecComDataSource source)
@@ -119,22 +168,65 @@ namespace KeibaDataCollector
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[{source.SourceName}] 朝一バッチ失敗（このソースのみスキップして続行）: {ex.Message}");
+                // 片方のソースが失敗しても、もう片方は動かす。ただし失敗は終了コードに残す。
+                LogFailure(source.SourceName, "朝一バッチ失敗（このソースのみスキップして続行）", ex);
             }
         }
 
+        // 監視が例外で落ちたときの再開待ち時間。
+        private static readonly TimeSpan WatchRetryDelay = TimeSpan.FromMinutes(3);
+
+        /// <summary>
+        /// 1つのデータ源の監視を、その日の打ち切り時刻まで動かし続ける。
+        ///
+        /// 以前は例外を1回捕まえたら、そのソースの監視をその日ずっと諦めていた。
+        /// COMや通信の一時的な失敗でも「その日は一切反映されない」ことになり、
+        /// しかも終了コードは正常のままだったため気づけなかった。
+        /// 落ちても間隔をあけて再開し、最後まで粘る。
+        /// </summary>
         private static async System.Threading.Tasks.Task RunWatchFor(
             JvSpecComDataSource source, WordPress.WordPressClient wp, CancellationToken ct)
         {
-            try
+            var attempt = 0;
+
+            while (!ct.IsCancellationRequested)
             {
-                source.Initialize(AppConfig.JvLinkSoftwareId);
-                await new RaceResultService(source, wp, AppConfig.RealtimePollInterval)
-                    .RunWatchLoopAsync(DateTime.Today, ct);
-            }
-            catch (Exception ex) when (!(ex is OperationCanceledException))
-            {
-                Console.WriteLine($"[{source.SourceName}] 監視失敗（このソースのみスキップ）: {ex.Message}");
+                attempt++;
+                try
+                {
+                    source.Initialize(AppConfig.JvLinkSoftwareId);
+                    await new RaceResultService(source, wp, AppConfig.RealtimePollInterval)
+                        .RunWatchLoopAsync(DateTime.Today, ct);
+
+                    // 打ち切り時刻まで動ききった＝その日の監視は完了。
+                    return;
+                }
+                catch (OperationCanceledException)
+                {
+                    return; // Ctrl+C / 停止要求。異常ではない。
+                }
+                catch (Exception ex)
+                {
+                    LogFailure(source.SourceName, $"監視が中断しました（{attempt}回目）", ex);
+                }
+
+                // 打ち切り時刻を過ぎていれば再開しない（翌日のタスクを妨げないため）。
+                if (DateTime.Now >= DateTime.Today.Add(RaceResultService.DailyCutoff))
+                {
+                    Console.WriteLine($"[{source.SourceName}] 本日の監視時間を過ぎたため再開しません。");
+                    return;
+                }
+
+                Console.WriteLine(
+                    $"[{source.SourceName}] {WatchRetryDelay.TotalMinutes:0}分後に監視を再開します。");
+                try
+                {
+                    await System.Threading.Tasks.Task.Delay(WatchRetryDelay, ct);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
             }
         }
     }

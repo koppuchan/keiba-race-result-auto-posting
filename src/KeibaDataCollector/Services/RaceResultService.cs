@@ -49,11 +49,14 @@ namespace KeibaDataCollector.Services
         // その時点でまだ当日のレースが配信されていなければ「0件」で即終了し、
         // その日は一切反映されないまま終わってしまう（実機で本日分が0件のまま
         // 終了する事象が発生）。定期的に取り直して拾い直す。
-        private static readonly TimeSpan RediscoverInterval = TimeSpan.FromMinutes(20);
+        // 一覧に現れてから監視対象に入るまでの遅れがそのまま反映の遅れになるため、
+        // 短すぎない範囲で細かく取り直す。
+        private static readonly TimeSpan RediscoverInterval = TimeSpan.FromMinutes(10);
 
         // その日の監視を打ち切る時刻。地方競馬のナイター（概ね21時台まで）を
         // 見終えてから終了し、翌日のトリガーを妨げないようにする。
-        private static readonly TimeSpan DailyCutoff = TimeSpan.FromHours(23.5);
+        // 中断からの再開判定にも使うため公開する。
+        public static readonly TimeSpan DailyCutoff = TimeSpan.FromHours(23.5);
 
         public async Task RunWatchLoopAsync(DateTime targetDate, CancellationToken ct)
         {
@@ -118,9 +121,20 @@ namespace KeibaDataCollector.Services
                 await Task.Delay(_pollInterval, ct);
             }
 
-            Console.WriteLine(
-                $"[{_source.SourceName}] {targetDate:yyyy-MM-dd} 監視終了" +
-                $"（確定{completed.Count}件 / 未確定{pending.Count}件）。");
+            // 1日の締めとして結果を1行にまとめる。ログ末尾を見るだけで、
+            // その日きちんと反映できたのか／取りこぼしたのかが判断できるようにする。
+            if (completed.Count == 0 && pending.Count > 0)
+            {
+                Console.WriteLine(
+                    $"[{_source.SourceName}] {targetDate:yyyy-MM-dd} 監視終了: " +
+                    $"[要確認] 監視対象{pending.Count}件に対し確定は0件でした。");
+            }
+            else
+            {
+                Console.WriteLine(
+                    $"[{_source.SourceName}] {targetDate:yyyy-MM-dd} 監視終了: " +
+                    $"確定{completed.Count}件 / 未確定のまま{pending.Count}件。");
+            }
         }
 
         /// <summary>当日のレース一覧を取り直し、未確定かつ未登録のものを監視対象に足す。
