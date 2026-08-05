@@ -134,7 +134,24 @@ namespace KeibaDataCollector.Interop
             // JV-Link内部での変換およびアプリケーション側でのUNICODE→SJIS変換が不要になり
             // コード変換におけるオーバーヘッドがなくなりました」と明記されている通り、
             // バイト配列で直接受け取ることで文字コード変換の問題自体を回避する。
-            var args = new object[] { new byte[ReadBufferSize], ReadBufferSize, string.Empty };
+            // buff には「空の配列」を渡すこと。ここを事前確保した大きな配列にしてはいけない。
+            //
+            // 仕様書のJVGetsの項より:
+            //   「データが格納されたBYTE型配列がセットされるポインタを指定します」
+            //   「メモリ受け渡しをバイト配列型のポインタで行い、そのポインタに対して
+            //     メモリエリアを確保して渡す方法になります」
+            //   「JVGetsではメモリの解放を行わないので、アプリケーション側で読み出しの度に
+            //     解放する必要があります」
+            // つまり領域はJV-Link側が確保し、こちらが渡した配列は解放されない（出力専用引数）。
+            // 付属のVB6サンプルでも未確保の動的配列（Dim bytData() As Byte）を渡している。
+            //
+            // 実機で発生した障害: ここで毎回 new byte[110000] を渡していたため、
+            // 1レコード読むたびに110KBが解放されずに積み上がり、監視を数時間続けたところで
+            // ヒープ破損（終了コード -1073740940 = 0xC0000374）でプロセスが異常終了した。
+            // UmaConn終了時に出ていた「Unexpected Memory Leak」ダイアログも同じ原因。
+            // 戻ってきた配列は.NETのマーシャラがbyte[]へ変換した後に解放するため、
+            // 仕様書が求める「読み出しの度の解放」も満たされる。
+            var args = new object[] { new byte[0], ReadBufferSize, string.Empty };
             int rc = (int)InvokeByRef("Gets", args, isByRef: new[] { true, false, true });
 
             // ここでは Shift_JIS ではなく Latin-1 でデコードする。
@@ -145,9 +162,13 @@ namespace KeibaDataCollector.Interop
             // Latin-1 は 0x00〜0xFF を U+0000〜U+00FF に一対一対応させるため往復が完全に可逆で、
             // SetDataB 側が元のバイト列をそのまま復元できる。
             // 日本語への変換は SetDataB 内の MidB2S が切り出し後に Shift_JIS で行う。
+            // 配列はJV-Link側が確保したものなので、戻り値のバイト数と実際の長さが
+            // 食い違う可能性を考慮する。そのままGetStringに渡すと範囲外で例外になり、
+            // 監視ループごと落ちてしまうため、短い方に合わせる。
             var rawBytes = args[0] as byte[];
-            buffer = (rawBytes != null && rc > 0)
-                ? Encoding.GetEncoding(28591).GetString(rawBytes, 0, rc)
+            var length = (rawBytes == null) ? 0 : Math.Min(rc, rawBytes.Length);
+            buffer = length > 0
+                ? Encoding.GetEncoding(28591).GetString(rawBytes, 0, length)
                 : string.Empty;
             fileName = args[2] as string ?? string.Empty;
             return rc;
