@@ -52,6 +52,12 @@
     background: #f2f2f2;
 }
 
+/* 取消・除外・競走中止。着順表の末尾にまとめて並ぶため、走った馬と区別できるようにする。 */
+.keiba-result-table tr.keiba-no-finish {
+    color: #888;
+    background: #fafafa;
+}
+
 /* 予想印は一覧の中で見つけやすいよう少し強調する。 */
 .keiba-table td.keiba-yosou {
     font-size: 1.15em;
