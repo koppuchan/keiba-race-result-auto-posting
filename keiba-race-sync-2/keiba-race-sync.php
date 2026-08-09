@@ -3,7 +3,7 @@
  * Plugin Name: Keiba Race Sync
  * Description: JV-Link/UmaConn連携の常駐アプリ（KeibaDataCollector）から送られる出走表・結果データを受け取り、
  *              カスタム投稿タイプ「race」として保存・表示する。
- * Version: 0.1.5
+ * Version: 0.1.4
  */
 
 if (!defined('ABSPATH')) {
@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
 define('KEIBA_RACE_SYNC_JSON_META_KEYS', array('race_card', 'race_result', 'payouts', 'corner_passage'));
 
 // 稼働中のバージョン確認用（/wp-json/keiba-race-sync/v1/health で参照）。
-define('KEIBA_RACE_SYNC_VERSION', '0.1.5');
+define('KEIBA_RACE_SYNC_VERSION', '0.1.4');
 
 // CSS/JS のキャッシュ更新用。アセットを変更したらここを上げる。
 define('KEIBA_RACE_SYNC_ASSET_VER', '0.2.2');
@@ -292,8 +292,6 @@ add_action('rest_api_init', function () {
                 'version' => KEIBA_RACE_SYNC_VERSION,
                 'assetVersion' => KEIBA_RACE_SYNC_ASSET_VER,
                 'lastPurge' => get_option('keiba_race_sync_last_purge', null),
-                // 対応表に無い競馬場コード。空でなければ名称の追加が必要。
-                'unknownTracks' => get_option('keiba_race_sync_unknown_tracks', new stdClass()),
                 'rocketCacheRoot' => (realpath(WP_CONTENT_DIR . '/cache/wp-rocket') !== false),
                 'purgeApis' => array(
                     'rocket' => function_exists('rocket_clean_post'),
@@ -633,42 +631,12 @@ function keiba_race_sync_track_name($code)
         '50' => '園田', '51' => '姫路', '52' => '益田', '53' => '福山', '54' => '高知',
         '55' => '佐賀', '56' => '荒尾', '57' => '中津',
         '58' => '札幌(地方)', '59' => '函館(地方)', '60' => '新潟(地方)', '61' => '中京(地方)',
-
-        // ばんえい帯広。コード33の「帯広」は平地時代のもので別物のため、区別できる名前にする。
-        // 実データで確認: 1レース内の走破タイムが1:51〜2:26と35秒もばらつき、
-        // 後3ハロンが全頭未提供、9〜10頭立て。いずれもばんえい競走の特徴。
-        '83' => 'ばんえい帯広',
     );
 
     if (isset($names[$code])) {
         return $names[$code];
     }
-
-    if ($code === '') {
-        return '不明';
-    }
-
-    // 未知のコードをそのまま出すと、お客様には「83」という競馬場があるように見える
-    // （実際にご指摘をいただいた）。コードだと分かる形にし、記録して気付けるようにする。
-    keiba_race_sync_record_unknown_track($code);
-    return '競馬場' . $code;
-}
-
-/**
- * 対応表に無い競馬場コードを記録する。
- * お客様に指摘されるまで気付けなかったため、health から確認できるようにしておく。
- */
-function keiba_race_sync_record_unknown_track($code)
-{
-    $known = get_option('keiba_race_sync_unknown_tracks', array());
-    if (!is_array($known)) {
-        $known = array();
-    }
-    if (isset($known[$code])) {
-        return;
-    }
-    $known[$code] = current_time('mysql');
-    update_option('keiba_race_sync_unknown_tracks', $known, false);
+    return $code !== '' ? $code : '不明';
 }
 
 /**
