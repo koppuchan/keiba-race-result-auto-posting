@@ -66,6 +66,39 @@ namespace KeibaDataCollector.WordPress
             await SendAsync(existing?.Id, payload);
         }
 
+        /// <summary>
+        /// 予想印（馬番 => ◎○▲△）をWordPressへ反映する。
+        ///
+        /// predictions だけを送る。出走表や結果を一緒に送ると、予想生成の時点では
+        /// まだ確定していない項目を空で上書きしてしまう。
+        ///
+        /// 投稿がまだ無い場合は新規作成する（朝一バッチより先に走っても取りこぼさない）。
+        /// LINE限定フラグはサイト側で設定する項目のため、こちらからは一切送らない
+        /// ＝毎朝の予想更新で消えることはない。
+        /// </summary>
+        public async Task UpsertPredictionsAsync(RaceKey key, Dictionary<int, string> marks)
+        {
+            var existing = await FindPostByRaceKeyAsync(key.AsSlug());
+            var suffix = existing != null && existing.HasRaceResult ? "結果" : "出走表";
+
+            // キーは馬番。JSONでは文字列キーになるため、表示側は文字列・数値の両方を見る作り。
+            var byUmaban = new Dictionary<string, string>();
+            foreach (var mark in marks)
+                byUmaban[mark.Key.ToString()] = mark.Value;
+
+            var payload = new
+            {
+                title = $"{key.RaceDate:yyyy/MM/dd} {key.TrackCode} {key.RaceNumber}R {suffix}",
+                status = "publish",
+                meta = new
+                {
+                    race_key = key.AsSlug(),
+                    predictions = JsonConvert.SerializeObject(byUmaban),
+                }
+            };
+            await SendAsync(existing?.Id, payload);
+        }
+
         // レースキーごとに、最後に送信した内容を保持する。watchモードは確定するまで同じレースを
         // 繰り返しポーリングするため、これが無いと内容が1文字も変わっていなくても
         // ポーリング間隔ごとにWordPressへ書き込み続けてしまう（実機で確認: 速報段階のまま

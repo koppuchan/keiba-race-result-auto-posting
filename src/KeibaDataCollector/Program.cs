@@ -96,6 +96,20 @@ namespace KeibaDataCollector
                         break;
                     }
 
+                    case "predict":
+                    {
+                        // 朝一オッズの人気順から予想印（◎○▲△）を生成して反映する。
+                        // 結果監視とは独立して動くため、片方が失敗しても他方に影響しない。
+                        var wp = new WordPressClient(
+                            AppConfig.WordPressBaseUrl,
+                            AppConfig.WordPressUser,
+                            AppConfig.WordPressAppPassword);
+
+                        RunPredictFor(jvLink, wp);
+                        RunPredictFor(umaConn, wp);
+                        break;
+                    }
+
                     case "probe":
                         // 調査用。どのデータ種別で何が取得できるかを実際に叩いて確認する
                         // （地方競馬でオッズ・人気が別種別で提供されていないかの確認用）。
@@ -113,9 +127,10 @@ namespace KeibaDataCollector
                         break;
 
                     default:
-                        Console.WriteLine("使い方: KeibaDataCollector.exe [setup|morning|watch|probe]");
+                        Console.WriteLine("使い方: KeibaDataCollector.exe [setup|morning|predict|watch|probe]");
                         Console.WriteLine("  setup   : 初回のみ。利用キー等をGUIダイアログで設定する。");
                         Console.WriteLine("  morning : 朝一バッチ。当日の出走表を取得しWordPressへ反映する。");
+                        Console.WriteLine("  predict : 朝一オッズの人気順から予想印を生成しWordPressへ反映する。");
                         Console.WriteLine("  watch   : レース確定を監視し、結果・払戻を随時WordPressへ反映する。");
                         Console.WriteLine("  probe   : 調査用。どのデータ種別で何が取得できるか確認する（WordPressへは書き込まない）。");
                         break;
@@ -170,6 +185,23 @@ namespace KeibaDataCollector
             {
                 // 片方のソースが失敗しても、もう片方は動かす。ただし失敗は終了コードに残す。
                 LogFailure(source.SourceName, "朝一バッチ失敗（このソースのみスキップして続行）", ex);
+            }
+        }
+
+        private static void RunPredictFor(JvSpecComDataSource source, WordPress.WordPressClient wp)
+        {
+            try
+            {
+                source.Initialize(AppConfig.JvLinkSoftwareId);
+                new PredictionService(source, wp)
+                    .RunAsync(DateTime.Today, CancellationToken.None)
+                    .GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                // 片方のソースが失敗しても、もう片方は動かす。ただし失敗は終了コードに残す。
+                // 予想が出ないことに気付けないと、お客様からの指摘で初めて分かることになる。
+                LogFailure(source.SourceName, "予想の生成に失敗（このソースのみスキップして続行）", ex);
             }
         }
 

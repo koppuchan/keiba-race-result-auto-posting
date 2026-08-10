@@ -65,6 +65,38 @@
     color: #c0392b;
 }
 
+/* 予想だけを表示する画面（LINEリッチメニューから開く想定）。
+   スマートフォンで見るため列を3つに絞り、横スクロールを不要にしている。 */
+.keiba-prediction-table {
+    width: 100%;
+    max-width: 480px;
+}
+
+.keiba-prediction-table th:first-child,
+.keiba-prediction-table td:first-child {
+    width: 3.5em;
+    text-align: center;
+}
+
+.keiba-prediction-table th:nth-child(2),
+.keiba-prediction-table td:nth-child(2) {
+    width: 4em;
+    text-align: center;
+}
+
+.keiba-prediction-table td:nth-child(3) {
+    text-align: left;
+}
+
+/* LINE限定レースの案内。予想の代わりに出るので、見落とされないようにする。 */
+.keiba-line-only {
+    margin: 0 0 1em;
+    padding: 1em;
+    background: #eaf7ea;
+    border-left: 4px solid #06c755; /* LINEブランドカラー */
+    font-weight: bold;
+}
+
 .keiba-sub-tables {
     display: flex;
     gap: 2em;

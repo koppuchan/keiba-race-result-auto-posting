@@ -3,7 +3,7 @@
  * Plugin Name: Keiba Race Sync
  * Description: JV-Link/UmaConn連携の常駐アプリ（KeibaDataCollector）から送られる出走表・結果データを受け取り、
  *              カスタム投稿タイプ「race」として保存・表示する。
- * Version: 0.1.8
+ * Version: 0.2.0
  */
 
 if (!defined('ABSPATH')) {
@@ -13,10 +13,10 @@ if (!defined('ABSPATH')) {
 define('KEIBA_RACE_SYNC_JSON_META_KEYS', array('race_card', 'race_result', 'payouts', 'corner_passage'));
 
 // 稼働中のバージョン確認用（/wp-json/keiba-race-sync/v1/health で参照）。
-define('KEIBA_RACE_SYNC_VERSION', '0.1.8');
+define('KEIBA_RACE_SYNC_VERSION', '0.2.0');
 
 // CSS/JS のキャッシュ更新用。アセットを変更したらここを上げる。
-define('KEIBA_RACE_SYNC_ASSET_VER', '0.2.2');
+define('KEIBA_RACE_SYNC_ASSET_VER', '0.3.0');
 
 /**
  * カスタム投稿タイプ「race」を登録。
@@ -66,6 +66,21 @@ add_action('init', function () {
         'single' => true,
         'show_in_rest' => true,
         'sanitize_callback' => 'keiba_race_sync_sanitize_json_meta',
+        'auth_callback' => function () {
+            return current_user_can('edit_posts');
+        },
+    ));
+
+    // LINE限定フラグ。重賞などで「予想はLINEで先行公開する」レースに立てると、
+    // サイト側では印を伏せて案内文を出す。
+    // どのレースをLINE限定にするかはその日ごとの編集判断なので、
+    // グレードコードによる自動判定ではなく、レース単位で指定する方式にしている。
+    // 収集アプリはこの項目を送らないため、毎朝の予想更新で消えることはない。
+    register_post_meta('race', 'line_only', array(
+        'type' => 'boolean',
+        'single' => true,
+        'show_in_rest' => true,
+        'default' => false,
         'auth_callback' => function () {
             return current_user_can('edit_posts');
         },
@@ -438,6 +453,86 @@ function keiba_race_sync_decode_meta($post_id, $meta_key)
     return is_array($decoded) ? $decoded : array();
 }
 
+/**
+ * LINE限定レースに表示する案内文。
+ * 文言を変えたくなったときにテーマ側から差し替えられるようフィルタを通す。
+ */
+function keiba_race_sync_line_only_notice()
+{
+    return (string) apply_filters(
+        'keiba_race_sync_line_only_notice',
+        'このレースの予想はLINEメニューでご確認ください'
+    );
+}
+
+/**
+ * 予想だけを表示する（LINEリッチメニューから開く予想ページ用）。
+ *
+ * 出走表・結果を含む通常表示と分けている理由は、この画面がスマートフォンの
+ * LINEアプリ内で開かれるため。14列の結果表は横スクロールが必要になり、
+ * 「印を確認する」という目的に対して情報が多すぎる。
+ */
+function keiba_race_sync_render_prediction($post_id)
+{
+    ob_start();
+    echo '<div class="keiba-race">';
+
+    if (get_post_meta($post_id, 'line_only', true)) {
+        echo '<p class="keiba-line-only">' . esc_html(keiba_race_sync_line_only_notice()) . '</p>';
+        echo '</div>';
+        return ob_get_clean();
+    }
+
+    $predictions = keiba_race_sync_decode_meta($post_id, 'predictions');
+    if (empty($predictions)) {
+        echo '<p class="keiba-selector-empty">このレースの予想はまだ公開されていません。</p>';
+        echo '</div>';
+        return ob_get_clean();
+    }
+
+    // 馬名は出走表から引く。結果しか無い場合は結果側から拾う。
+    $entries = keiba_race_sync_decode_meta($post_id, 'race_card');
+    if (empty($entries)) {
+        $entries = keiba_race_sync_decode_meta($post_id, 'race_result');
+    }
+    $names = array();
+    foreach ($entries as $e) {
+        if (isset($e['umaban'])) {
+            $names[(string) (int) $e['umaban']] = $e['horseName'] ?? '';
+        }
+    }
+
+    // 印の強い順に並べる。馬番順のままだと「どれが本命か」が一目で分からない。
+    $order = array('◎' => 1, '○' => 2, '▲' => 3, '△' => 4, '☆' => 5, '×' => 6);
+    $rows = array();
+    foreach ($predictions as $umaban => $mark) {
+        $rows[] = array(
+            'umaban' => (int) $umaban,
+            'mark'   => (string) $mark,
+            'name'   => isset($names[(string) (int) $umaban]) ? $names[(string) (int) $umaban] : '',
+        );
+    }
+    usort($rows, function ($a, $b) use ($order) {
+        $oa = isset($order[$a['mark']]) ? $order[$a['mark']] : 99;
+        $ob = isset($order[$b['mark']]) ? $order[$b['mark']] : 99;
+        return $oa === $ob ? $a['umaban'] - $b['umaban'] : $oa - $ob;
+    });
+
+    echo '<table class="keiba-table keiba-prediction-table">';
+    echo '<thead><tr><th>印</th><th>馬番</th><th>馬名</th></tr></thead><tbody>';
+    foreach ($rows as $r) {
+        echo '<tr>';
+        echo '<td class="keiba-yosou">' . esc_html($r['mark']) . '</td>';
+        echo '<td>' . esc_html($r['umaban']) . '</td>';
+        echo '<td>' . esc_html($r['name']) . '</td>';
+        echo '</tr>';
+    }
+    echo '</tbody></table>';
+    echo '</div>';
+
+    return ob_get_clean();
+}
+
 function keiba_race_sync_render_race($post_id)
 {
     $race_card = keiba_race_sync_decode_meta($post_id, 'race_card');
@@ -445,9 +540,15 @@ function keiba_race_sync_render_race($post_id)
     $payouts = keiba_race_sync_decode_meta($post_id, 'payouts');
     $corner_passage = keiba_race_sync_decode_meta($post_id, 'corner_passage');
 
-    // 予想印はデータ提供元（JV-Link/UmaConn）には無く、サイト側で入力するもの。
-    // 入力があるレースだけ「予想」列を出す。
+    // 予想印は毎朝のオッズから自動生成される。入力があるレースだけ「予想」列を出す。
     $predictions = keiba_race_sync_decode_meta($post_id, 'predictions');
+
+    // LINE限定に指定されたレースは、印を出さずに案内文だけを表示する。
+    // 印を配列から消しておけば、以降の描画は「予想が無いレース」と同じ扱いになる。
+    $line_only = (bool) get_post_meta($post_id, 'line_only', true);
+    if ($line_only) {
+        $predictions = array();
+    }
 
     // 競馬場によって出せない項目があるため、描画側にも競馬場コードを渡す。
     $parsed = keiba_race_sync_parse_race_key(get_post_meta($post_id, 'race_key', true));
@@ -455,6 +556,10 @@ function keiba_race_sync_render_race($post_id)
 
     ob_start();
     echo '<div class="keiba-race">';
+
+    if ($line_only) {
+        echo '<p class="keiba-line-only">' . esc_html(keiba_race_sync_line_only_notice()) . '</p>';
+    }
 
     if (!empty($race_result)) {
         keiba_race_sync_render_result_table($race_result, $predictions, $track);
@@ -868,7 +973,9 @@ function keiba_race_sync_has_result($post_id)
  * 1日分（最大100レース前後）のテーブルを全部埋め込むとページが重くなるため。
  */
 add_shortcode('keiba_race_selector', function ($atts) {
-    $atts = shortcode_atts(array('date' => 'today'), $atts, 'keiba_race_selector');
+    $atts = shortcode_atts(array('date' => 'today', 'view' => 'race'), $atts, 'keiba_race_selector');
+    // view="prediction" で予想だけを表示するモードになる（LINEリッチメニュー用）。
+    $view = ($atts['view'] === 'prediction') ? 'prediction' : 'race';
 
     $ymd = ($atts['date'] === 'today')
         ? wp_date('Ymd')
@@ -893,7 +1000,7 @@ add_shortcode('keiba_race_selector', function ($atts) {
         return ob_get_clean();
     }
 
-    echo '<div class="keiba-selector" data-date="' . esc_attr($ymd) . '">';
+    echo '<div class="keiba-selector" data-date="' . esc_attr($ymd) . '" data-view="' . esc_attr($view) . '">';
 
     // STEP 1: 競馬場
     echo '<div class="keiba-step">';
@@ -929,7 +1036,8 @@ add_shortcode('keiba_race_selector', function ($atts) {
 
     // STEP 3: 出走表／結果の表示先
     echo '<div class="keiba-step keiba-step-detail" hidden>';
-    echo '<h3 class="keiba-step-title"><span class="keiba-step-badge">3</span><span class="keiba-detail-heading">出走表</span></h3>';
+    echo '<h3 class="keiba-step-title"><span class="keiba-step-badge">3</span><span class="keiba-detail-heading">'
+        . ($view === 'prediction' ? '予想' : '出走表') . '</span></h3>';
     echo '<div class="keiba-detail-body" aria-live="polite"></div>';
     echo '</div>';
 
@@ -998,7 +1106,9 @@ add_action('rest_api_init', function () {
                 'title'      => get_the_title($post),
                 'permalink'  => get_permalink($post),
                 'has_result' => keiba_race_sync_has_result($post->ID),
-                'html'       => keiba_race_sync_render_race($post->ID),
+                'html'       => ($request->get_param('view') === 'prediction')
+                    ? keiba_race_sync_render_prediction($post->ID)
+                    : keiba_race_sync_render_race($post->ID),
             );
         },
     ));
@@ -1085,7 +1195,17 @@ function keiba_race_sync_render_predictions_metabox($post)
 
     wp_nonce_field('keiba_race_predictions_save', 'keiba_race_predictions_nonce');
 
-    echo '<p>印を付けた馬だけ選択してください。1頭も選ばなければ「予想」列は表示されません。</p>';
+    // LINE限定の切り替え。印より先に置く（チェックすると印は表示されなくなるため）。
+    $line_only = (bool) get_post_meta($post->ID, 'line_only', true);
+    echo '<p style="padding:10px;background:#fff8e5;border-left:4px solid #dba617">';
+    echo '<label><input type="checkbox" name="keiba_line_only" value="1" ' . checked($line_only, true, false) . '> ';
+    echo '<strong>このレースの予想はLINE限定にする</strong></label><br>';
+    echo '<span class="description">チェックすると、サイト上では印を表示せず「'
+        . esc_html(keiba_race_sync_line_only_notice()) . '」と案内します。</span></p>';
+
+    echo '<p>印を付けた馬だけ選択してください。1頭も選ばなければ「予想」列は表示されません。<br>';
+    echo '<span class="description">印は毎朝、その時点のオッズの人気順から自動で付け直されます。'
+        . '手動で変更しても翌朝の更新で上書きされます。</span></p>';
     echo '<table class="widefat striped" style="max-width:640px">';
     echo '<thead><tr><th style="width:5em">馬番</th><th>馬名</th><th style="width:8em">予想印</th></tr></thead><tbody>';
 
@@ -1144,5 +1264,12 @@ add_action('save_post_race', function ($post_id) {
         delete_post_meta($post_id, 'predictions');
     } else {
         update_post_meta($post_id, 'predictions', wp_json_encode($clean, JSON_UNESCAPED_UNICODE));
+    }
+
+    // チェックが外れている場合はフラグ自体を消す（残しておく意味がないため）。
+    if (!empty($_POST['keiba_line_only'])) {
+        update_post_meta($post_id, 'line_only', 1);
+    } else {
+        delete_post_meta($post_id, 'line_only');
     }
 });

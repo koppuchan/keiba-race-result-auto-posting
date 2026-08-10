@@ -54,8 +54,12 @@
             stepDetail.hidden = false;
             detailBody.innerHTML = '<p class="keiba-loading">読み込み中...</p>';
 
+            // view は表示の種類。'prediction' なら予想だけを返してもらう
+            // （LINEリッチメニューから開く予想ページ用）。既定は出走表／結果。
+            var view = root.dataset.view || 'race';
             var url = endpoint + (endpoint.indexOf('?') === -1 ? '?' : '&') +
-                'race_key=' + encodeURIComponent(raceKey);
+                'race_key=' + encodeURIComponent(raceKey) +
+                '&view=' + encodeURIComponent(view);
 
             fetch(url, { credentials: 'same-origin' })
                 .then(function (res) {
@@ -66,7 +70,8 @@
                 })
                 .then(function (data) {
                     if (detailHeading) {
-                        detailHeading.textContent = data.title || '出走表';
+                        detailHeading.textContent =
+                            data.title || (view === 'prediction' ? '予想' : '出走表');
                     }
                     detailBody.innerHTML = data.html || '';
                     stepDetail.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
