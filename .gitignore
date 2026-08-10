@@ -20,3 +20,6 @@ logs/
 /keiba-race-sync*.zip
 /keiba-race-sync.php
 /keiba-race-sync*/
+
+# 調査・検証用の一時ファイル。アンダースコア始まりを作業用とする。
+/_*
