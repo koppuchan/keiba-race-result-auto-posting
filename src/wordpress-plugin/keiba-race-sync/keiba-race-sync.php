@@ -3,7 +3,7 @@
  * Plugin Name: Keiba Race Sync
  * Description: JV-Link/UmaConn連携の常駐アプリ（KeibaDataCollector）から送られる出走表・結果データを受け取り、
  *              カスタム投稿タイプ「race」として保存・表示する。
- * Version: 0.1.7
+ * Version: 0.1.8
  */
 
 if (!defined('ABSPATH')) {
@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
 define('KEIBA_RACE_SYNC_JSON_META_KEYS', array('race_card', 'race_result', 'payouts', 'corner_passage'));
 
 // 稼働中のバージョン確認用（/wp-json/keiba-race-sync/v1/health で参照）。
-define('KEIBA_RACE_SYNC_VERSION', '0.1.7');
+define('KEIBA_RACE_SYNC_VERSION', '0.1.8');
 
 // CSS/JS のキャッシュ更新用。アセットを変更したらここを上げる。
 define('KEIBA_RACE_SYNC_ASSET_VER', '0.2.2');
@@ -505,19 +505,37 @@ function keiba_race_sync_kinryo_text($value, $track)
     if ((string) $track === KEIBA_RACE_SYNC_BANEI) {
         return '－';
     }
-    return ((float) $value) > 0 ? (string) $value : '－';
+    return keiba_race_sync_decimal_text($value);
 }
 
 /**
- * 人気・単勝オッズ・後3Fの表示値。
- * これらは「0」が有効な値になり得ない項目で、0は提供元が送っていないことを意味する。
+ * 小数1桁で表示する項目（斤量・単勝オッズ・後3ハロン）。
+ *
+ * 素直に文字列化すると、55.0 が「55」、43.0 が「43」になる。
+ * JSONから復元した時点で float になっているため、整数値だけ小数点が消える。
+ * その結果、同じ列に「5.5」と「52」が混在し、オッズや秒数として不自然に見える
+ * （実測: 昨日の874頭中、斤量756・単勝71・後3F39セルがこの状態だった）。
+ * 桁を揃える。
+ *
+ * 0は有効な値になり得ず、提供元が送っていないことを意味するので未提供として扱う。
  * 実際に、船橋は成績レコードに単勝オッズを入れてこないレースがあり、
  * ばんえいは後3ハロンを一切送ってこない。
- * そのまま出すと「1番人気」「オッズ0倍」に見えるため、未提供と分かる表示にする。
+ * そのまま出すと「オッズ0倍」「後3F 0秒」に見えてしまう。
  */
-function keiba_race_sync_num_text($value)
+function keiba_race_sync_decimal_text($value, $decimals = 1)
 {
-    return ((float) $value) > 0 ? (string) $value : '－';
+    $number = (float) $value;
+    return $number > 0 ? number_format($number, $decimals, '.', '') : '－';
+}
+
+/**
+ * 整数で表示する項目（人気順）。小数点を付けてはいけない。
+ * 0は「提供元が送っていない」の意味で、1番人気ではない。
+ */
+function keiba_race_sync_int_text($value)
+{
+    $number = (int) $value;
+    return $number > 0 ? (string) $number : '－';
 }
 
 /** 馬体重。0kgの馬は存在しないので、未提供として扱う。 */
@@ -644,9 +662,9 @@ function keiba_race_sync_render_result_table($entries, $predictions = array(), $
         echo '<td>' . esc_html($e['jockeyName'] ?? '') . '</td>';
         echo '<td>' . esc_html($e['time'] ?? '') . '</td>';
         echo '<td>' . esc_html($e['chakusaText'] ?? '') . '</td>';
-        echo '<td>' . esc_html(keiba_race_sync_num_text($e['ninki'] ?? null)) . '</td>';
-        echo '<td>' . esc_html(keiba_race_sync_num_text($e['tanshoOdds'] ?? null)) . '</td>';
-        echo '<td>' . esc_html(keiba_race_sync_num_text($e['ushi3F'] ?? null)) . '</td>';
+        echo '<td>' . esc_html(keiba_race_sync_int_text($e['ninki'] ?? null)) . '</td>';
+        echo '<td>' . esc_html(keiba_race_sync_decimal_text($e['tanshoOdds'] ?? null)) . '</td>';
+        echo '<td>' . esc_html(keiba_race_sync_decimal_text($e['ushi3F'] ?? null)) . '</td>';
         echo '<td>' . esc_html($e['trainerName'] ?? '') . '</td>';
         echo '<td>' . esc_html(keiba_race_sync_bataiju_text($e)) . '</td>';
         if ($show_prediction) {
