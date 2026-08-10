@@ -3,7 +3,7 @@
  * Plugin Name: Keiba Race Sync
  * Description: JV-Link/UmaConn連携の常駐アプリ（KeibaDataCollector）から送られる出走表・結果データを受け取り、
  *              カスタム投稿タイプ「race」として保存・表示する。
- * Version: 0.1.5
+ * Version: 0.1.6
  */
 
 if (!defined('ABSPATH')) {
@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
 define('KEIBA_RACE_SYNC_JSON_META_KEYS', array('race_card', 'race_result', 'payouts', 'corner_passage'));
 
 // 稼働中のバージョン確認用（/wp-json/keiba-race-sync/v1/health で参照）。
-define('KEIBA_RACE_SYNC_VERSION', '0.1.5');
+define('KEIBA_RACE_SYNC_VERSION', '0.1.6');
 
 // CSS/JS のキャッシュ更新用。アセットを変更したらここを上げる。
 define('KEIBA_RACE_SYNC_ASSET_VER', '0.2.2');
@@ -230,6 +230,53 @@ function keiba_race_sync_delete_rocket_files($post_id)
         }
     }
     return $deleted;
+}
+
+/**
+ * プラグインを更新したら、サイト全体のページキャッシュを一度だけ破棄する。
+ *
+ * 用意した理由:
+ *   このプラグインはFTPやFile Managerでファイルを直接上書きして更新している。
+ *   その方法ではWordPressの更新フックが一切走らないため、キャッシュプラグインは
+ *   更新に気付けず、古いHTMLを配信し続ける。
+ *   実際に、競馬場名の修正を入れたのに一覧ページが「83」のままになる事象が発生した
+ *   （表示ロジックは直っていたが、キャッシュが修正前のHTMLを返していた）。
+ *   毎回手作業でキャッシュクリアするのは忘れるので、自分で気付くようにする。
+ *
+ * バージョン定数の変化で判定するため、更新のたびに自動で1回だけ走る。
+ */
+add_action('init', function () {
+    if (get_option('keiba_race_sync_installed_version') === KEIBA_RACE_SYNC_VERSION) {
+        return;
+    }
+    // 先に記録する。破棄処理が落ちても毎リクエスト走り続けないようにするため。
+    update_option('keiba_race_sync_installed_version', KEIBA_RACE_SYNC_VERSION, true);
+    keiba_race_sync_purge_everything();
+}, 99);
+
+/**
+ * サイト全体のキャッシュを破棄する。プラグイン更新時のみ呼ぶ。
+ * 表示の作りが変わったときは、どのページが影響を受けるか特定できないため全体を対象にする。
+ */
+function keiba_race_sync_purge_everything()
+{
+    if (function_exists('rocket_clean_domain')) {        // WP Rocket
+        rocket_clean_domain();
+    }
+    if (function_exists('wp_cache_clear_cache')) {       // WP Super Cache
+        wp_cache_clear_cache();
+    }
+    if (function_exists('w3tc_flush_all')) {             // W3 Total Cache
+        w3tc_flush_all();
+    }
+    if (function_exists('wpfc_clear_all_cache')) {       // WP Fastest Cache
+        wpfc_clear_all_cache(true);
+    }
+    do_action('litespeed_purge_all');
+    do_action('cache_enabler_clear_complete_cache');
+
+    // 一覧ページだけは確実に消す。お客様が最初にご覧になる画面のため。
+    keiba_race_sync_purge_listing_pages();
 }
 
 /**
