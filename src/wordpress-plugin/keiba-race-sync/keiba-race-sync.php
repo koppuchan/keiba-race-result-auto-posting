@@ -3,7 +3,7 @@
  * Plugin Name: Keiba Race Sync
  * Description: JV-Link/UmaConn連携の常駐アプリ（KeibaDataCollector）から送られる出走表・結果データを受け取り、
  *              カスタム投稿タイプ「race」として保存・表示する。
- * Version: 0.1.6
+ * Version: 0.1.7
  */
 
 if (!defined('ABSPATH')) {
@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
 define('KEIBA_RACE_SYNC_JSON_META_KEYS', array('race_card', 'race_result', 'payouts', 'corner_passage'));
 
 // 稼働中のバージョン確認用（/wp-json/keiba-race-sync/v1/health で参照）。
-define('KEIBA_RACE_SYNC_VERSION', '0.1.6');
+define('KEIBA_RACE_SYNC_VERSION', '0.1.7');
 
 // CSS/JS のキャッシュ更新用。アセットを変更したらここを上げる。
 define('KEIBA_RACE_SYNC_ASSET_VER', '0.2.2');
@@ -449,13 +449,17 @@ function keiba_race_sync_render_race($post_id)
     // 入力があるレースだけ「予想」列を出す。
     $predictions = keiba_race_sync_decode_meta($post_id, 'predictions');
 
+    // 競馬場によって出せない項目があるため、描画側にも競馬場コードを渡す。
+    $parsed = keiba_race_sync_parse_race_key(get_post_meta($post_id, 'race_key', true));
+    $track = $parsed ? $parsed['track'] : '';
+
     ob_start();
     echo '<div class="keiba-race">';
 
     if (!empty($race_result)) {
-        keiba_race_sync_render_result_table($race_result, $predictions);
+        keiba_race_sync_render_result_table($race_result, $predictions, $track);
     } elseif (!empty($race_card)) {
-        keiba_race_sync_render_card_table($race_card, $predictions);
+        keiba_race_sync_render_card_table($race_card, $predictions, $track);
     }
 
     if (!empty($payouts) || !empty($corner_passage)) {
@@ -482,7 +486,53 @@ function keiba_race_sync_waku_badge($waku)
     return sprintf('<span class="keiba-waku keiba-waku-%d">%d</span>', $waku, $waku);
 }
 
-function keiba_race_sync_render_card_table($entries, $predictions = array())
+/** ばんえい帯広。負担重量の扱いが平地と根本的に異なる。 */
+const KEIBA_RACE_SYNC_BANEI = '83';
+
+/**
+ * 斤量（負担重量）の表示値。
+ *
+ * ばんえいは馬が曳く「そり」の重量で、規定は最低480kg（牝馬460kg）〜最高1000kg。
+ * ところが実データから得られる値は24.4〜28.0で、どう読んでも規定の範囲に入らず、
+ * 全118頭中72頭が0という欠落もある。換算方法が特定できていないため、
+ * 誤った数値を出すよりは出さない。平地（盛岡・浦和・金沢・中央）は50〜58kgで正常なので
+ * そのまま表示する。
+ *
+ * 正しい換算が判明したらこの関数だけを直せばよい（保存データは加工していない）。
+ */
+function keiba_race_sync_kinryo_text($value, $track)
+{
+    if ((string) $track === KEIBA_RACE_SYNC_BANEI) {
+        return '－';
+    }
+    return ((float) $value) > 0 ? (string) $value : '－';
+}
+
+/**
+ * 人気・単勝オッズ・後3Fの表示値。
+ * これらは「0」が有効な値になり得ない項目で、0は提供元が送っていないことを意味する。
+ * 実際に、船橋は成績レコードに単勝オッズを入れてこないレースがあり、
+ * ばんえいは後3ハロンを一切送ってこない。
+ * そのまま出すと「1番人気」「オッズ0倍」に見えるため、未提供と分かる表示にする。
+ */
+function keiba_race_sync_num_text($value)
+{
+    return ((float) $value) > 0 ? (string) $value : '－';
+}
+
+/** 馬体重。0kgの馬は存在しないので、未提供として扱う。 */
+function keiba_race_sync_bataiju_text($entry)
+{
+    $weight = isset($entry['bataijuuZengo']) ? (int) $entry['bataijuuZengo'] : 0;
+    if ($weight <= 0) {
+        return '－';
+    }
+    $zogen = isset($entry['bataijuuZogen']) ? (int) $entry['bataijuuZogen'] : 0;
+    $sign = $zogen > 0 ? '+' : '';
+    return $weight . '(' . $sign . $zogen . ')';
+}
+
+function keiba_race_sync_render_card_table($entries, $predictions = array(), $track = '')
 {
     $show_prediction = !empty($predictions);
 
@@ -501,7 +551,7 @@ function keiba_race_sync_render_card_table($entries, $predictions = array())
         echo '<td>' . esc_html($e['umaban'] ?? '') . '</td>';
         echo '<td>' . esc_html($e['horseName'] ?? '') . '</td>';
         echo '<td>' . esc_html($e['sexAge'] ?? '') . '</td>';
-        echo '<td>' . esc_html($e['kinryo'] ?? '') . '</td>';
+        echo '<td>' . esc_html(keiba_race_sync_kinryo_text($e['kinryo'] ?? '', $track)) . '</td>';
         echo '<td>' . esc_html($e['jockeyName'] ?? '') . '</td>';
         echo '<td>' . esc_html($e['trainerName'] ?? '') . '</td>';
         if ($show_prediction) {
@@ -563,7 +613,7 @@ function keiba_race_sync_sort_by_finish($entries)
     return $entries;
 }
 
-function keiba_race_sync_render_result_table($entries, $predictions = array())
+function keiba_race_sync_render_result_table($entries, $predictions = array(), $track = '')
 {
     $entries = keiba_race_sync_sort_by_finish($entries);
     $show_prediction = !empty($predictions);
@@ -579,10 +629,6 @@ function keiba_race_sync_render_result_table($entries, $predictions = array())
     }
     echo '</tr></thead><tbody>';
     foreach ($entries as $e) {
-        $bataiju = esc_html($e['bataijuuZengo'] ?? '');
-        $zogen = isset($e['bataijuuZogen']) ? (int) $e['bataijuuZogen'] : 0;
-        $zogen_text = $zogen > 0 ? "(+{$zogen})" : ($zogen < 0 ? "({$zogen})" : '(0)');
-
         // 取消・除外・競走中止は着順が付かず0で入ってくる。そのまま出すと
         // 「0着」という存在しない着順に見えるため、印字しない。
         $chakujun = isset($e['chakujun']) ? (int) $e['chakujun'] : 0;
@@ -594,15 +640,15 @@ function keiba_race_sync_render_result_table($entries, $predictions = array())
         echo '<td>' . esc_html($e['umaban'] ?? '') . '</td>';
         echo '<td>' . esc_html($e['horseName'] ?? '') . '</td>';
         echo '<td>' . esc_html($e['sexAge'] ?? '') . '</td>';
-        echo '<td>' . esc_html($e['kinryo'] ?? '') . '</td>';
+        echo '<td>' . esc_html(keiba_race_sync_kinryo_text($e['kinryo'] ?? '', $track)) . '</td>';
         echo '<td>' . esc_html($e['jockeyName'] ?? '') . '</td>';
         echo '<td>' . esc_html($e['time'] ?? '') . '</td>';
         echo '<td>' . esc_html($e['chakusaText'] ?? '') . '</td>';
-        echo '<td>' . esc_html($e['ninki'] ?? '') . '</td>';
-        echo '<td>' . esc_html($e['tanshoOdds'] ?? '') . '</td>';
-        echo '<td>' . esc_html($e['ushi3F'] ?? '') . '</td>';
+        echo '<td>' . esc_html(keiba_race_sync_num_text($e['ninki'] ?? null)) . '</td>';
+        echo '<td>' . esc_html(keiba_race_sync_num_text($e['tanshoOdds'] ?? null)) . '</td>';
+        echo '<td>' . esc_html(keiba_race_sync_num_text($e['ushi3F'] ?? null)) . '</td>';
         echo '<td>' . esc_html($e['trainerName'] ?? '') . '</td>';
-        echo '<td>' . $bataiju . $zogen_text . '</td>';
+        echo '<td>' . esc_html(keiba_race_sync_bataiju_text($e)) . '</td>';
         if ($show_prediction) {
             echo '<td class="keiba-yosou">' . esc_html(keiba_race_sync_prediction_for($predictions, $e['umaban'] ?? null)) . '</td>';
         }
