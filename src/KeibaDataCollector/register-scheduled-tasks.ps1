@@ -6,6 +6,7 @@
     2つのタスクを作成します。
 
       KeibaDataCollector-Morning : 毎日 -MorningTime に scheduled-morning.bat
+      KeibaDataCollector-Predict : 毎日 -PredictTime に scheduled-predict.bat
       KeibaDataCollector-Watch   : 毎日 -WatchTime   に scheduled-watch.bat
 
     watch モードは当日の全レースが確定すると自身で終了するため、停止トリガーは不要です。
@@ -19,6 +20,9 @@
 .PARAMETER MorningTime
     朝一バッチの実行時刻（HH:mm）。既定 07:00。
     出馬表は開催日より前に配信されるため、早朝で問題ありません。
+
+.PARAMETER PredictTime
+    予想印を生成する時刻。出走表が揃い、オッズが動き始めたあとに実行する。
 
 .PARAMETER WatchTime
     確定監視の開始時刻（HH:mm）。既定 09:30。
@@ -42,6 +46,7 @@
 [CmdletBinding()]
 param(
     [string] $MorningTime = '07:00',
+    [string] $PredictTime = '09:00',
     [string] $WatchTime = '09:30',
     [switch] $RunOnlyWhenLoggedOn = $true
 )
@@ -50,12 +55,13 @@ $ErrorActionPreference = 'Stop'
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $morningBat = Join-Path $scriptDir 'scheduled-morning.bat'
+$predictBat = Join-Path $scriptDir 'scheduled-predict.bat'
 $watchBat = Join-Path $scriptDir 'scheduled-watch.bat'
 $exePath = Join-Path $scriptDir 'bin\Debug\net48\KeibaDataCollector.exe'
 $secrets = Join-Path $scriptDir 'secrets.local.bat'
 
 # --- 事前チェック ------------------------------------------------------------
-foreach ($required in @($morningBat, $watchBat, $exePath)) {
+foreach ($required in @($morningBat, $predictBat, $watchBat, $exePath)) {
     if (-not (Test-Path $required)) {
         throw "必要なファイルが見つかりません: $required`nビルド済みか確認してください（dotnet build -c Debug）。"
     }
@@ -119,6 +125,9 @@ function Register-KeibaTask {
 
 Register-KeibaTask -TaskName 'KeibaDataCollector-Morning' -BatPath $morningBat -StartTime $MorningTime `
     -Description '当日の出走表を取得しWordPressへ反映する（朝一バッチ）'
+
+Register-KeibaTask -TaskName 'KeibaDataCollector-Predict' -BatPath $predictBat -StartTime $PredictTime `
+    -Description '朝一オッズの人気順から予想印を生成しWordPressへ反映する'
 
 Register-KeibaTask -TaskName 'KeibaDataCollector-Watch' -BatPath $watchBat -StartTime $WatchTime `
     -Description 'レース確定を監視し、結果・払戻をWordPressへ随時反映する。全レース確定で自動終了する'

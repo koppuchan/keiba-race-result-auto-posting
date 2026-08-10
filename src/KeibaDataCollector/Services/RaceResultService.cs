@@ -18,10 +18,6 @@ namespace KeibaDataCollector.Services
     /// </summary>
     public class RaceResultService
     {
-        // option=2(今週データ)はサーバー側で対象範囲を絞ってくれるため、fromtimeは十分に古い
-        // 固定値にする（RaceCardServiceと同じ理由）。
-        private const string EarlyAnchorFromTime = "19860101000000";
-
         // 速報オッズ（単複枠）。JV-Data仕様書「（２）速報系データ」より、O1レコード
         // （単勝オッズ・単勝人気順を含む）が返る種別。
         private const string RealtimeOddsDataSpec = "0B31";
@@ -362,62 +358,10 @@ namespace KeibaDataCollector.Services
             }
         }
 
-        /// <summary>朝一バッチと同じ方法で当日のレース一覧（キーのみ）を取得する。
-        /// "RA"レコード（レース詳細、1レース1件）を使うため"SE"より効率的。</summary>
+        /// <summary>当日のレース一覧（キーのみ）を取得する。
+        /// 予想生成でも同じ列挙が必要なため、実装は RaceDiscovery に共通化している。</summary>
         private List<RaceKey> DiscoverTodaysRaceKeys(DateTime targetDate)
-        {
-            var open = _source.Open("RACE", EarlyAnchorFromTime, DataOption.ThisWeekAndToday);
-            if (open.ReturnCode == -1)
-            {
-                _source.Close();
-                return new List<RaceKey>();
-            }
-            if (open.ReturnCode < 0)
-            {
-                _source.Close();
-                throw new InvalidOperationException($"{_source.SourceName} Open failed: {open.ReturnCode}");
-            }
-
-            var keys = new List<RaceKey>();
-            try
-            {
-                while (true)
-                {
-                    int size = _source.Read(out var buffer, out _);
-                    if (size == 0) break;
-                    if (size == -1) continue;
-                    if (size == -3)
-                    {
-                        Thread.Sleep(500);
-                        continue;
-                    }
-                    if (size < 0)
-                        throw new InvalidOperationException($"{_source.SourceName} Read failed: {size}");
-
-                    if (JvRecordParser.GetRecordTypeId(buffer) != "RA") continue;
-
-                    RaceKey raceKey;
-                    try
-                    {
-                        (raceKey, _) = JvRecordParser.ParseCornerPassage(buffer);
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"[{_source.SourceName}] RAレコードのパース失敗（このレコードのみスキップ）: {ex.Message}");
-                        continue;
-                    }
-
-                    if (raceKey.RaceDate.Date == targetDate.Date)
-                        keys.Add(raceKey);
-                }
-            }
-            finally
-            {
-                _source.Close();
-            }
-
-            return keys;
-        }
+            => RaceDiscovery.ForDate(_source, targetDate);
 
         private RaceResult GetOrCreate(RaceKey key)
         {
