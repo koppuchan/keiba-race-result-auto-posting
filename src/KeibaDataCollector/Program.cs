@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Threading;
 using KeibaDataCollector.Interop;
 using KeibaDataCollector.Services;
@@ -18,10 +18,12 @@ namespace KeibaDataCollector
         private static int Main(string[] args)
         {
             var mode = args.Length > 0 ? args[0] : "help";
+            // probe のみ第2引数でレースキーを受け取る（例: probe 20260811-46-1R）。
+            var arg = args.Length > 1 ? args[1] : null;
 
             try
             {
-                Run(mode);
+                Run(mode, arg);
             }
             catch (Exception ex)
             {
@@ -39,7 +41,7 @@ namespace KeibaDataCollector
             return 0;
         }
 
-        private static void Run(string mode)
+        private static void Run(string mode, string arg = null)
         {
             // WordPressClient はここでは作らない: setup モードはWordPressに一切繋がないため、
             // WordPressUser/WordPressAppPassword 未設定でも setup だけは実行できるようにする。
@@ -114,8 +116,8 @@ namespace KeibaDataCollector
                         // 調査用。どのデータ種別で何が取得できるかを実際に叩いて確認する
                         // （地方競馬でオッズ・人気が別種別で提供されていないかの確認用）。
                         // WordPressには一切書き込まない。
-                        RunProbeFor(jvLink);
-                        RunProbeFor(umaConn);
+                        RunProbeFor(jvLink, arg);
+                        RunProbeFor(umaConn, arg);
                         break;
 
                     case "setup":
@@ -133,6 +135,7 @@ namespace KeibaDataCollector
                         Console.WriteLine("  predict : 朝一オッズの人気順から予想印を生成しWordPressへ反映する。");
                         Console.WriteLine("  watch   : レース確定を監視し、結果・払戻を随時WordPressへ反映する。");
                         Console.WriteLine("  probe   : 調査用。どのデータ種別で何が取得できるか確認する（WordPressへは書き込まない）。");
+                        Console.WriteLine("            レースを指定する場合: probe 20260811-46-1R");
                         break;
                 }
             }
@@ -147,12 +150,12 @@ namespace KeibaDataCollector
             Console.WriteLine(ex.ToString());
         }
 
-        private static void RunProbeFor(JvSpecComDataSource source)
+        private static void RunProbeFor(JvSpecComDataSource source, string raceKeySlug = null)
         {
             try
             {
                 source.Initialize(AppConfig.JvLinkSoftwareId);
-                new DataSpecProbeService(source).Run(DateTime.Today);
+                new DataSpecProbeService(source).Run(DateTime.Today, raceKeySlug);
             }
             catch (Exception ex)
             {
