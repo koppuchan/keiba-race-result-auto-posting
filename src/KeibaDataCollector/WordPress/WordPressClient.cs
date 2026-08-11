@@ -83,6 +83,12 @@ namespace KeibaDataCollector.WordPress
         /// 「朝一時点のオッズによる人気順」という本来の意味から離れていく。
         /// 戻り値は実際に書き込んだかどうか。
         /// </summary>
+        public async Task<bool> HasPredictionsAsync(RaceKey key)
+        {
+            var existing = await FindPostByRaceKeyAsync(key.AsSlug());
+            return existing != null && existing.HasPredictions;
+        }
+
         public async Task<bool> UpsertPredictionsAsync(RaceKey key, Dictionary<int, string> marks)
         {
             var existing = await FindPostByRaceKeyAsync(key.AsSlug());
