@@ -54,6 +54,9 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+# 登録し直したことで停止したタスクを、あとでまとめて再開するために覚えておく。
+$script:TasksToResume = @()
+
 $morningBat = Join-Path $scriptDir 'scheduled-morning.bat'
 $predictBat = Join-Path $scriptDir 'scheduled-predict.bat'
 $watchBat = Join-Path $scriptDir 'scheduled-watch.bat'
@@ -125,10 +128,20 @@ function Register-KeibaTask {
 
     $task = New-ScheduledTask -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Description $Description
 
+    # タスク定義を置き換えると、実行中のインスタンスはその場で終了する。
+    # watch はトリガーが1日1回しかないため、日中に登録し直すと
+    # その日はもう再開せず、以降のレース結果が反映されないまま終わる
+    # （実測 2026-08-11: 15:10にこのスクリプトを再実行した結果、
+    #   57レース中18レースで結果の反映が止まった）。
+    # 実行中だったタスクは登録後に必ず再開する。
+    $wasRunning = $false
     if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
-        Write-Output "既存タスクを更新します: $TaskName"
+        $wasRunning = ((Get-ScheduledTask -TaskName $TaskName).State -eq 'Running')
+        Write-Output ("既存タスクを更新します: $TaskName" + $(if ($wasRunning) { "（実行中→登録後に再開します）" } else { "" }))
         Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
     }
+
+    if ($wasRunning) { $script:TasksToResume += $TaskName }
 
     if ($RunOnlyWhenLoggedOn) {
         Register-ScheduledTask -TaskName $TaskName -InputObject $task | Out-Null
@@ -150,6 +163,16 @@ Register-KeibaTask -TaskName 'KeibaDataCollector-Predict' -BatPath $predictBat -
 
 Register-KeibaTask -TaskName 'KeibaDataCollector-Watch' -BatPath $watchBat -StartTime $WatchTime `
     -Description 'レース確定を監視し、結果・払戻をWordPressへ随時反映する。全レース確定で自動終了する'
+
+# 登録し直したことで停止したタスクを再開する。
+# ここを忘れると、日中に更新した日はその後のレースが反映されないまま終わる。
+if ($script:TasksToResume.Count -gt 0) {
+    Write-Output ""
+    foreach ($name in $script:TasksToResume) {
+        Write-Output "実行中だったため再開します: $name"
+        Start-ScheduledTask -TaskName $name
+    }
+}
 
 Write-Output ""
 Write-Output "完了しました。確認方法:"
