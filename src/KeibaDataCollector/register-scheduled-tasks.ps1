@@ -81,11 +81,23 @@ function Register-KeibaTask {
         [string] $TaskName,
         [string] $BatPath,
         [string] $StartTime,
-        [string] $Description
+        [string] $Description,
+        # 指定すると、開始時刻から $RepeatFor の間、$RepeatEvery ごとに繰り返し実行する。
+        [timespan] $RepeatEvery,
+        [timespan] $RepeatFor
     )
 
     $action = New-ScheduledTaskAction -Execute $BatPath -WorkingDirectory $scriptDir
     $trigger = New-ScheduledTaskTrigger -Daily -At $StartTime
+
+    # 地方競馬のオッズは朝のうちに順次配信されるため、予想生成は1回では全レースを賄えない
+    # （実測: 09:31時点で57レース中2件、10:05時点で24件）。
+    # 繰り返し実行し、オッズが出たレースから順に埋めていく。
+    # 既に予想が入っているレースは上書きしないので、何度走らせても最初の値が残る。
+    if ($RepeatEvery -gt [timespan]::Zero) {
+        $trigger.Repetition = (New-ScheduledTaskTrigger -Once -At $StartTime `
+            -RepetitionInterval $RepeatEvery -RepetitionDuration $RepeatFor).Repetition
+    }
 
     # 同じCOMオブジェクトを二重に開かないよう多重起動を禁止する。
     # 電源/ネットワーク条件でスキップされないようにもしておく（VPSは常時電源のため）。
@@ -127,7 +139,8 @@ Register-KeibaTask -TaskName 'KeibaDataCollector-Morning' -BatPath $morningBat -
     -Description '当日の出走表を取得しWordPressへ反映する（朝一バッチ）'
 
 Register-KeibaTask -TaskName 'KeibaDataCollector-Predict' -BatPath $predictBat -StartTime $PredictTime `
-    -Description '朝一オッズの人気順から予想印を生成しWordPressへ反映する'
+    -Description '朝一オッズの人気順から予想印を生成しWordPressへ反映する（オッズ配信を待って繰り返す）' `
+    -RepeatEvery (New-TimeSpan -Minutes 30) -RepeatFor (New-TimeSpan -Hours 6)
 
 Register-KeibaTask -TaskName 'KeibaDataCollector-Watch' -BatPath $watchBat -StartTime $WatchTime `
     -Description 'レース確定を監視し、結果・払戻をWordPressへ随時反映する。全レース確定で自動終了する'

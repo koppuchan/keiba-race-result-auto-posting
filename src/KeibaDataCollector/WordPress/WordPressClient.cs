@@ -75,10 +75,19 @@ namespace KeibaDataCollector.WordPress
         /// 投稿がまだ無い場合は新規作成する（朝一バッチより先に走っても取りこぼさない）。
         /// LINE限定フラグはサイト側で設定する項目のため、こちらからは一切送らない
         /// ＝毎朝の予想更新で消えることはない。
+        ///
+        /// 既に予想が入っているレースは上書きしない（先に書いたものを残す）。
+        /// 地方競馬のオッズは朝のうちに順次配信されるため、予想生成は1日に何度も走らせて
+        /// 出そろったレースから埋めていく運用になる。上書きしてしまうと、
+        /// 実測でオッズが揃ったレースほど発走直前のオッズで塗り替えられ、
+        /// 「朝一時点のオッズによる人気順」という本来の意味から離れていく。
+        /// 戻り値は実際に書き込んだかどうか。
         /// </summary>
-        public async Task UpsertPredictionsAsync(RaceKey key, Dictionary<int, string> marks)
+        public async Task<bool> UpsertPredictionsAsync(RaceKey key, Dictionary<int, string> marks)
         {
             var existing = await FindPostByRaceKeyAsync(key.AsSlug());
+            if (existing != null && existing.HasPredictions) return false;
+
             var suffix = existing != null && existing.HasRaceResult ? "結果" : "出走表";
 
             // キーは馬番。JSONでは文字列キーになるため、表示側は文字列・数値の両方を見る作り。
@@ -97,6 +106,7 @@ namespace KeibaDataCollector.WordPress
                 }
             };
             await SendAsync(existing?.Id, payload);
+            return true;
         }
 
         // レースキーごとに、最後に送信した内容を保持する。watchモードは確定するまで同じレースを
@@ -152,21 +162,28 @@ namespace KeibaDataCollector.WordPress
             if (posts == null || posts.Length == 0) return null;
 
             var post = posts[0];
-            var raceResult = post.Meta?.RaceResult;
 
             return new ExistingRacePost
             {
                 Id = post.Id,
-                // メタは未設定だと "" や "[]" になりうるため、中身のある配列かどうかで判定する。
-                HasRaceResult = !string.IsNullOrWhiteSpace(raceResult)
-                                && raceResult.Trim() != "[]",
+                // メタは未設定だと "" や "[]"、"{}" になりうるため、中身があるかどうかで判定する。
+                HasRaceResult = HasContent(post.Meta?.RaceResult),
+                HasPredictions = HasContent(post.Meta?.Predictions),
             };
+        }
+
+        private static bool HasContent(string metaValue)
+        {
+            if (string.IsNullOrWhiteSpace(metaValue)) return false;
+            var trimmed = metaValue.Trim();
+            return trimmed != "[]" && trimmed != "{}";
         }
 
         private class ExistingRacePost
         {
             public int Id { get; set; }
             public bool HasRaceResult { get; set; }
+            public bool HasPredictions { get; set; }
         }
 
         private async Task SendAsync(int? existingId, object payload)
@@ -199,6 +216,9 @@ namespace KeibaDataCollector.WordPress
         {
             [JsonProperty("race_result")]
             public string RaceResult { get; set; }
+
+            [JsonProperty("predictions")]
+            public string Predictions { get; set; }
         }
     }
 }

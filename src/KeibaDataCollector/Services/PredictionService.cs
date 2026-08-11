@@ -47,7 +47,7 @@ namespace KeibaDataCollector.Services
             var races = RaceDiscovery.ForDate(_source, targetDate);
             Console.WriteLine($"[{_source.SourceName}] {targetDate:yyyy-MM-dd} 予想対象レース: {races.Count}件");
 
-            int published = 0, noOdds = 0, failed = 0;
+            int published = 0, already = 0, noOdds = 0, failed = 0;
 
             foreach (var race in races)
             {
@@ -59,11 +59,19 @@ namespace KeibaDataCollector.Services
                     if (marks.Count == 0)
                     {
                         // 発売前などでオッズがまだ無い。異常ではない。
+                        // 地方競馬のオッズは朝のうちに順次配信されるため、
+                        // 実行時刻が早いほどここに入る件数が多くなる。
                         noOdds++;
                         continue;
                     }
 
-                    await _wp.UpsertPredictionsAsync(race, marks);
+                    if (!await _wp.UpsertPredictionsAsync(race, marks))
+                    {
+                        // 既に予想が入っている＝より早い時刻のオッズで生成済み。上書きしない。
+                        already++;
+                        continue;
+                    }
+
                     published++;
                     Console.WriteLine(
                         $"[{_source.SourceName}] {race.AsSlug()} 予想を反映（" +
@@ -79,16 +87,27 @@ namespace KeibaDataCollector.Services
             }
 
             Console.WriteLine(
-                $"[{_source.SourceName}] 予想の反映完了: 成功{published}件 / オッズ未提供{noOdds}件 / 失敗{failed}件");
+                $"[{_source.SourceName}] 予想の反映完了: 新規{published}件 / 反映済み{already}件 / " +
+                $"オッズ未提供{noOdds}件 / 失敗{failed}件");
 
-            if (published == 0 && races.Count > 0)
+            // 「1件も新規が無い」は正常な状態でも起きる（前回までに全レース反映済み）。
+            // また、朝の早い時間帯はオッズがまだ配信されておらず0件が正常
+            // （実測: 09:31時点で57レース中2件、10:05時点で24件）。
+            //
+            // 異常と言えるのは「この時刻になっても1件も予想が付いていない」場合だけ。
+            // ここを単純に「0件なら失敗」にすると毎朝1本目が必ず失敗し、
+            // 本当の異常を知らせる警報として機能しなくなる。
+            if (published == 0 && already == 0 && races.Count > 0
+                && DateTime.Now.TimeOfDay >= NoPredictionIsAbnormalAfter)
             {
-                // 1件も付けられないのは、オッズ取得が丸ごと失敗している可能性が高い。
-                // 黙って正常終了すると、予想が出ないまま誰も気付けない。
                 throw new InvalidOperationException(
-                    $"{_source.SourceName} 予想を1件も生成できませんでした（対象{races.Count}件）。オッズ取得を確認してください。");
+                    $"{_source.SourceName} 予想が1件もありません（対象{races.Count}件、うちオッズ未提供{noOdds}件）。" +
+                    "オッズ取得を確認してください。");
             }
         }
+
+        /// <summary>この時刻を過ぎても予想が1件も無ければ異常とみなす。</summary>
+        private static readonly TimeSpan NoPredictionIsAbnormalAfter = TimeSpan.FromHours(11);
 
         /// <summary>
         /// 1レース分の印を作る。戻り値は 馬番 => 印。
