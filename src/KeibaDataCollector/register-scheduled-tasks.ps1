@@ -90,9 +90,15 @@ function Register-KeibaTask {
     $action = New-ScheduledTaskAction -Execute $BatPath -WorkingDirectory $scriptDir
     $trigger = New-ScheduledTaskTrigger -Daily -At $StartTime
 
-    # 地方競馬のオッズは朝のうちに順次配信されるため、予想生成は1回では全レースを賄えない
-    # （実測: 09:31時点で57レース中2件、10:05時点で24件）。
-    # 繰り返し実行し、オッズが出たレースから順に埋めていく。
+    # 速報オッズは「対象レースの勝ち馬投票券発売以降」にしか提供されない
+    # （JV-Data仕様書「（２）速報系データ」）。発売開始は競馬場ごとに違うため、
+    # 1回の実行では全レースを賄えない
+    # （実測 2026-08-11: 09:31時点で57レース中2件、10:05時点で24件。
+    #   盛岡・笠松は朝に全レース揃う一方、浦和・門別・金沢は12:30時点でも0件）。
+    #
+    # そのため開催時間全体を覆うように繰り返す。門別のナイターは最終レースが20時台のため、
+    # 09:00から12時間（21:00まで）とする。ここを短くすると、
+    # 発売が遅い競馬場の後半レースに予想が付かないまま終わる。
     # 既に予想が入っているレースは上書きしないので、何度走らせても最初の値が残る。
     if ($RepeatEvery -gt [timespan]::Zero) {
         $trigger.Repetition = (New-ScheduledTaskTrigger -Once -At $StartTime `
@@ -140,7 +146,7 @@ Register-KeibaTask -TaskName 'KeibaDataCollector-Morning' -BatPath $morningBat -
 
 Register-KeibaTask -TaskName 'KeibaDataCollector-Predict' -BatPath $predictBat -StartTime $PredictTime `
     -Description '朝一オッズの人気順から予想印を生成しWordPressへ反映する（オッズ配信を待って繰り返す）' `
-    -RepeatEvery (New-TimeSpan -Minutes 30) -RepeatFor (New-TimeSpan -Hours 6)
+    -RepeatEvery (New-TimeSpan -Minutes 30) -RepeatFor (New-TimeSpan -Hours 12)
 
 Register-KeibaTask -TaskName 'KeibaDataCollector-Watch' -BatPath $watchBat -StartTime $WatchTime `
     -Description 'レース確定を監視し、結果・払戻をWordPressへ随時反映する。全レース確定で自動終了する'
