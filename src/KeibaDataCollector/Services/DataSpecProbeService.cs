@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -37,9 +37,20 @@ namespace KeibaDataCollector.Services
             _source = source;
         }
 
-        public void Run(DateTime targetDate)
+        /// <param name="raceKeySlug">
+        /// "20260811-46-1R" 形式。指定するとそのレースだけを調べる。
+        /// 省略すると当日の最初のレースを使う。
+        ///
+        /// 名指しできるようにした理由: 競馬場によってオッズの配信時刻が違い、
+        /// 「取得できていない競馬場のレース」を狙って調べる必要があるため。
+        /// 最初のレースだけでは、既にオッズが出ている競馬場を引いてしまい何も分からない。
+        /// </param>
+        public void Run(DateTime targetDate, string raceKeySlug = null)
         {
-            var raceKey = FindFirstRaceOfDay(targetDate);
+            var raceKey = string.IsNullOrWhiteSpace(raceKeySlug)
+                ? FindFirstRaceOfDay(targetDate)
+                : ParseSlug(raceKeySlug);
+
             if (raceKey == null)
             {
                 Console.WriteLine($"[{_source.SourceName}] {targetDate:yyyy-MM-dd} の対象レースが見つかりませんでした。");
@@ -134,6 +145,24 @@ namespace KeibaDataCollector.Services
         }
 
         /// <summary>当日のレースを1件だけ見つける（RAレコードから）。</summary>
+        /// <summary>"20260811-46-1R" を RaceKey に戻す。形式が違えば null。</summary>
+        private static RaceKey ParseSlug(string slug)
+        {
+            var m = System.Text.RegularExpressions.Regex.Match(
+                slug.Trim(), @"^(\d{8})-(\w+)-(\d+)R$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            if (!m.Success)
+            {
+                Console.WriteLine($"レースキーの形式が不正です: {slug}（例: 20260811-46-1R）");
+                return null;
+            }
+            return new RaceKey
+            {
+                RaceDate = DateTime.ParseExact(m.Groups[1].Value, "yyyyMMdd", null),
+                TrackCode = m.Groups[2].Value,
+                RaceNumber = int.Parse(m.Groups[3].Value),
+            };
+        }
+
         private RaceKey FindFirstRaceOfDay(DateTime targetDate)
         {
             var open = _source.Open("RACE", EarlyAnchorFromTime, DataOption.ThisWeekAndToday);
