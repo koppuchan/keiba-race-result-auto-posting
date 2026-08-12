@@ -47,6 +47,7 @@ namespace KeibaDataCollector
             // WordPressUser/WordPressAppPassword 未設定でも setup だけは実行できるようにする。
             using (var jvLink = new JvSpecComDataSource(AppConfig.JvLinkProgId, "JV", "JV-Link(中央競馬)"))
             using (var umaConn = new JvSpecComDataSource(AppConfig.UmaConnProgId, "NV", "UmaConn(地方競馬)"))
+            try
             {
                 switch (mode)
                 {
@@ -138,6 +139,12 @@ namespace KeibaDataCollector
                         Console.WriteLine("            レースを指定する場合: probe 20260811-46-1R");
                         break;
                 }
+            }
+            finally
+            {
+                // ここまで来れば作業は終わっている。この先はCOMの後片付けだけで、
+                // そこが固まってもプロセスは終了させてよい（終了しないほうが害が大きい）。
+                ShutdownWatchdog.Arm(_hadFailure ? 1 : 0);
             }
         }
 
