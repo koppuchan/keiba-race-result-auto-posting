@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -56,7 +56,7 @@ namespace KeibaDataCollector.Services
             var races = RaceDiscovery.ForDate(_source, targetDate);
             Console.WriteLine($"[{_source.SourceName}] {targetDate:yyyy-MM-dd} 予想対象レース: {races.Count}件");
 
-            int published = 0, already = 0, noOdds = 0, failed = 0;
+            int published = 0, already = 0, notOnSale = 0, oddsError = 0, failed = 0;
 
             foreach (var race in races)
             {
@@ -77,11 +77,22 @@ namespace KeibaDataCollector.Services
                     var marks = BuildMarks(race);
                     if (marks.Count == 0)
                     {
-                        // まだ発売が始まっていないレース。異常ではない。
-                        // JV-Data仕様書「（２）速報系データ」より、速報オッズ(0B30/0B31)は
-                        // 「対象レースの勝ち馬投票券発売以降に提供」される。
-                        // 発売前のオッズは、どのデータ種別を使っても存在しない。
-                        noOdds++;
+                        // JV-Linkインターフェース仕様書 p.54 のコード表より、
+                        //   -1 = 該当データ無し（＝まだ発売前。正常）
+                        //   それ以外の負値 = 実際のエラー（-202 オープン中 / -301 認証 など）
+                        // 両方を「オッズ未提供」で片付けると、COM競合や認証切れが
+                        // 発売前と同じ見え方になり切り分けられない。必ず分けて記録する。
+                        if (_lastOpenReturnCode == 0 || _lastOpenReturnCode == -1)
+                        {
+                            notOnSale++;
+                        }
+                        else
+                        {
+                            oddsError++;
+                            Console.WriteLine(
+                                $"[{_source.SourceName}] {race.AsSlug()} オッズ取得エラー rc={_lastOpenReturnCode}" +
+                                $"（{DescribeReturnCode(_lastOpenReturnCode)}）");
+                        }
                         continue;
                     }
 
@@ -108,7 +119,7 @@ namespace KeibaDataCollector.Services
 
             Console.WriteLine(
                 $"[{_source.SourceName}] 予想の反映完了: 新規{published}件 / 反映済み{already}件 / " +
-                $"オッズ未提供{noOdds}件 / 失敗{failed}件");
+                $"発売前{notOnSale}件 / オッズ取得エラー{oddsError}件 / 反映失敗{failed}件");
 
             // 「1件も新規が無い」は正常な状態でも起きる（前回までに全レース反映済み）。
             // また、朝の早い時間帯はオッズがまだ配信されておらず0件が正常
@@ -121,8 +132,31 @@ namespace KeibaDataCollector.Services
                 && DateTime.Now.TimeOfDay >= NoPredictionIsAbnormalAfter)
             {
                 throw new InvalidOperationException(
-                    $"{_source.SourceName} 予想が1件もありません（対象{races.Count}件、うちオッズ未提供{noOdds}件）。" +
-                    "オッズ取得を確認してください。");
+                    $"{_source.SourceName} 予想が1件もありません" +
+                    $"（対象{races.Count}件、発売前{notOnSale}件、オッズ取得エラー{oddsError}件）。");
+            }
+        }
+
+        /// <summary>
+        /// JVRTOpen/NVRTOpen の戻り値の意味。
+        /// 出典: JV-Linkインターフェース仕様書 p.54「ＪＶＯｐｅｎ／ＪＶＲＴＯｐｅｎ」コード表。
+        /// ログを読む人が仕様書を引かずに原因へ辿り着けるようにするため、文言も出す。
+        /// </summary>
+        private static string DescribeReturnCode(int rc)
+        {
+            switch (rc)
+            {
+                case -1:   return "該当データ無し（発売前）";
+                case -111: return "dataspecパラメータが不正";
+                case -114: return "keyパラメータが不正";
+                case -201: return "JVInitが行われていない";
+                case -202: return "前回のOpenに対してCloseが呼ばれていない（オープン中）";
+                case -211: return "レジストリ内容が不正";
+                case -301: return "認証エラー（利用キーを確認）";
+                case -302: return "利用キーの有効期限切れ";
+                case -303: return "利用キーが設定されていない";
+                case -504: return "サーバーメンテナンス中";
+                default:   return "仕様書p.54のコード表を参照";
             }
         }
 
@@ -154,15 +188,24 @@ namespace KeibaDataCollector.Services
             return marks;
         }
 
+        /// <summary>
+        /// オッズを取得できなかった理由。「まだ発売前」と「本当のエラー」を区別する。
+        ///
+        /// 以前は戻り値が0以外なら理由を問わず「オッズ未提供」として黙って進めていた。
+        /// そのため、COMの競合(-202)や認証エラー(-301)が起きていても
+        /// 「まだ発売前」と同じ見え方になり、切り分けができなかった。
+        /// </summary>
+        private int _lastOpenReturnCode;
+
         private Dictionary<int, JvRecordParser.TanshoOdds> FetchTanshoOdds(RaceKey race)
         {
             Dictionary<int, JvRecordParser.TanshoOdds> byUmaban = null;
 
             int rc = _source.OpenRealtime(RealtimeOddsDataSpec, race.AsJvRealtimeKey());
+            _lastOpenReturnCode = rc;
             if (rc != 0)
             {
-                // -1（該当データ無し）など。Openに対するCloseを必ず呼ぶ。
-                // 呼ばずに抜けると以降のOpenが -202 で失敗し続ける。
+                // Openに対するCloseを必ず呼ぶ。呼ばずに抜けると以降のOpenが -202 で失敗し続ける。
                 _source.Close();
                 return null;
             }
