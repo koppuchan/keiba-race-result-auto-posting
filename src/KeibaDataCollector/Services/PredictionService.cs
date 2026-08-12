@@ -71,7 +71,7 @@ namespace KeibaDataCollector.Services
                     // （57レース×1日24回＝1368回）。
                     // オッズ取得は1レースあたり数十秒かかることがあり、
                     // 1回の実行が長引くほど、オッズ公開から反映までの遅れが大きくなる。
-                    if (await _wp.ShouldSkipPredictionAsync(race))
+                    if (await _wp.ShouldSkipPredictionAsync(race, Marks.Length))
                     {
                         already++;
                         continue;
@@ -181,15 +181,21 @@ namespace KeibaDataCollector.Services
 
             // 人気順が有効（1以上）の馬だけを対象に、人気の若い順へ印を割り当てる。
             // 同一人気が複数返ることは通常ないが、返ってきた場合は馬番順で安定させる。
-            var ordered = byUmaban
+            var ranked = byUmaban
                 .Where(kv => kv.Value.Ninki > 0)
                 .OrderBy(kv => kv.Value.Ninki)
                 .ThenBy(kv => kv.Key)
-                .Take(Marks.Length)
                 .ToList();
 
-            for (int i = 0; i < ordered.Count; i++)
-                marks[ordered[i].Key] = Marks[i];
+            // 印の数だけ人気順が揃うまで待つ。
+            // オッズ配信が始まった直後は一部の馬しか値が入っておらず、
+            // そこで確定させると印の欠けた予想が残ってしまう
+            // （実測 2026-08-12: 大井2Rが5頭立てにもかかわらず◎1頭だけで固定された）。
+            // 揃っていなければ空を返し、次の回で取り直す。
+            if (ranked.Count < Marks.Length) return marks;
+
+            for (int i = 0; i < Marks.Length; i++)
+                marks[ranked[i].Key] = Marks[i];
 
             return marks;
         }
