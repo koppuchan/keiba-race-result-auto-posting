@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -67,43 +67,47 @@ namespace KeibaDataCollector.WordPress
         }
 
         /// <summary>
-        /// 予想印（馬番 => ◎○▲△）をWordPressへ反映する。
-        ///
-        /// predictions だけを送る。出走表や結果を一緒に送ると、予想生成の時点では
-        /// まだ確定していない項目を空で上書きしてしまう。
-        ///
-        /// 投稿がまだ無い場合は新規作成する（朝一バッチより先に走っても取りこぼさない）。
-        /// LINE限定フラグはサイト側で設定する項目のため、こちらからは一切送らない
-        /// ＝毎朝の予想更新で消えることはない。
-        ///
-        /// 既に予想が入っているレースは上書きしない（先に書いたものを残す）。
-        /// 地方競馬のオッズは朝のうちに順次配信されるため、予想生成は1日に何度も走らせて
-        /// 出そろったレースから埋めていく運用になる。上書きしてしまうと、
-        /// 実測でオッズが揃ったレースほど発走直前のオッズで塗り替えられ、
-        /// 「朝一時点のオッズによる人気順」という本来の意味から離れていく。
-        /// 戻り値は実際に書き込んだかどうか。
-        /// </summary>
-        /// <summary>
         /// 予想生成でこのレースを飛ばしてよいか。
         ///
         /// 飛ばす条件は2つ。
-        ///  ・既に予想が入っている（最初に取れた値を残すため上書きしない）
+        ///  ・既に「揃った」予想が入っている（最初に取れた値を残すため上書きしない）
         ///  ・既に結果が出ている
         ///
         /// 後者は速さのためだけではない。終わったレースのオッズは確定オッズなので、
         /// それで印を付けると「結果を見てから当てた予想」を載せることになる。
         /// 発走前に出せなかったレースは、予想なしのままにしておくのが正しい。
+        ///
+        /// 「揃った」を条件にしているのは、印が欠けたまま固定されるのを防ぐため。
+        /// 実際に大井2R（5頭立て）で、オッズ配信が始まった直後の不完全な状態を掴み、
+        /// ◎1頭だけの予想が確定してしまった（2026-08-12）。
+        /// 欠けている場合は次の回で取り直して上書きする。
         /// </summary>
-        public async Task<bool> ShouldSkipPredictionAsync(RaceKey key)
+        public async Task<bool> ShouldSkipPredictionAsync(RaceKey key, int requiredMarks)
         {
             var existing = await FindPostByRaceKeyAsync(key.AsSlug());
-            return existing != null && (existing.HasPredictions || existing.HasRaceResult);
+            if (existing == null) return false;
+            return existing.HasRaceResult || existing.PredictionMarkCount >= requiredMarks;
         }
 
+        /// <summary>
+        /// 予想印（馬番 => ◎○▲△）をWordPressへ反映する。
+        ///
+        /// predictions だけを送る。出走表や結果を一緒に送ると、予想生成の時点では
+        /// まだ確定していない項目を空で上書きしてしまう。
+        /// 投稿がまだ無い場合は新規作成する（朝一バッチより先に走っても取りこぼさない）。
+        /// LINE限定フラグはサイト側で設定する項目のため、こちらからは一切送らない
+        /// ＝毎朝の予想更新で消えることはない。
+        ///
+        /// 既にある予想と同数以上でなければ書き込まない。これで
+        ///  ・揃った予想が、あとから発走直前のオッズで塗り替えられることを防ぎ
+        ///  ・欠けた予想は、揃った内容で上書きできる
+        /// の両方を満たす。戻り値は実際に書き込んだかどうか。
+        /// </summary>
         public async Task<bool> UpsertPredictionsAsync(RaceKey key, Dictionary<int, string> marks)
         {
             var existing = await FindPostByRaceKeyAsync(key.AsSlug());
-            if (existing != null && existing.HasPredictions) return false;
+            // 既にある予想より少ない（＝より不完全な）内容で上書きしない。
+            if (existing != null && existing.PredictionMarkCount >= marks.Count) return false;
 
             var suffix = existing != null && existing.HasRaceResult ? "結果" : "出走表";
 
@@ -185,7 +189,7 @@ namespace KeibaDataCollector.WordPress
                 Id = post.Id,
                 // メタは未設定だと "" や "[]"、"{}" になりうるため、中身があるかどうかで判定する。
                 HasRaceResult = HasContent(post.Meta?.RaceResult),
-                HasPredictions = HasContent(post.Meta?.Predictions),
+                PredictionMarkCount = CountPredictionMarks(post.Meta?.Predictions),
             };
         }
 
@@ -196,11 +200,27 @@ namespace KeibaDataCollector.WordPress
             return trimmed != "[]" && trimmed != "{}";
         }
 
+        /// <summary>予想メタ（馬番 => 印）に入っている印の数。未設定なら0。</summary>
+        private static int CountPredictionMarks(string metaValue)
+        {
+            if (!HasContent(metaValue)) return 0;
+            try
+            {
+                var marks = JsonConvert.DeserializeObject<Dictionary<string, string>>(metaValue);
+                return marks?.Count ?? 0;
+            }
+            catch (JsonException)
+            {
+                // 壊れた値が入っていても取得処理は止めない。0件扱いにして次の回で上書きさせる。
+                return 0;
+            }
+        }
+
         private class ExistingRacePost
         {
             public int Id { get; set; }
             public bool HasRaceResult { get; set; }
-            public bool HasPredictions { get; set; }
+            public int PredictionMarkCount { get; set; }
         }
 
         private async Task SendAsync(int? existingId, object payload)
