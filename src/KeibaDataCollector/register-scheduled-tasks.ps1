@@ -103,6 +103,11 @@ function Register-KeibaTask {
     # 09:00から12時間（21:00まで）とする。ここを短くすると、
     # 発売が遅い競馬場の後半レースに予想が付かないまま終わる。
     # 既に予想が入っているレースは上書きしないので、何度走らせても最初の値が残る。
+    #
+    # 間隔は15分。オッズ公開から反映までの遅れが「間隔＋実行時間」になるため、
+    # 30分間隔だと最悪50分ほど遅れ、お客様から指摘を受けた（2026-08-12）。
+    # 反映済み・確定済みのレースはWordPress照会だけで飛ばすので、
+    # 日中に進むほど1回の実行は短くなる。
     if ($RepeatEvery -gt [timespan]::Zero) {
         $trigger.Repetition = (New-ScheduledTaskTrigger -Once -At $StartTime `
             -RepetitionInterval $RepeatEvery -RepetitionDuration $RepeatFor).Repetition
@@ -159,7 +164,7 @@ Register-KeibaTask -TaskName 'KeibaDataCollector-Morning' -BatPath $morningBat -
 
 Register-KeibaTask -TaskName 'KeibaDataCollector-Predict' -BatPath $predictBat -StartTime $PredictTime `
     -Description '朝一オッズの人気順から予想印を生成しWordPressへ反映する（オッズ配信を待って繰り返す）' `
-    -RepeatEvery (New-TimeSpan -Minutes 30) -RepeatFor (New-TimeSpan -Hours 12)
+    -RepeatEvery (New-TimeSpan -Minutes 15) -RepeatFor (New-TimeSpan -Hours 12)
 
 Register-KeibaTask -TaskName 'KeibaDataCollector-Watch' -BatPath $watchBat -StartTime $WatchTime `
     -Description 'レース確定を監視し、結果・払戻をWordPressへ随時反映する。全レース確定で自動終了する'

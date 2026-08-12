@@ -53,6 +53,7 @@ namespace KeibaDataCollector.Services
 
         public async Task RunAsync(DateTime targetDate, CancellationToken ct)
         {
+            var started = DateTime.Now;
             var races = RaceDiscovery.ForDate(_source, targetDate);
             Console.WriteLine($"[{_source.SourceName}] {targetDate:yyyy-MM-dd} 予想対象レース: {races.Count}件");
 
@@ -64,11 +65,13 @@ namespace KeibaDataCollector.Services
 
                 try
                 {
-                    // 先にWordPressを見て、既に予想があればオッズ取得ごと省く。
+                    // 先にWordPressを見て、済んでいるレースはオッズ取得ごと省く。
                     // このモードは開催時間中ずっと繰り返し走るため、逆順にすると
                     // 反映済みのレースにも毎回COM呼び出しが発生する
                     // （57レース×1日24回＝1368回）。
-                    if (await _wp.HasPredictionsAsync(race))
+                    // オッズ取得は1レースあたり数十秒かかることがあり、
+                    // 1回の実行が長引くほど、オッズ公開から反映までの遅れが大きくなる。
+                    if (await _wp.ShouldSkipPredictionAsync(race))
                     {
                         already++;
                         continue;
@@ -117,9 +120,12 @@ namespace KeibaDataCollector.Services
                 }
             }
 
+            // 所要時間も出す。繰り返し間隔より長くなると、次の回が多重起動禁止で弾かれ、
+            // オッズ公開から反映までの遅れがそのまま伸びる。調整の判断材料として必ず残す。
             Console.WriteLine(
                 $"[{_source.SourceName}] 予想の反映完了: 新規{published}件 / 反映済み{already}件 / " +
-                $"発売前{notOnSale}件 / オッズ取得エラー{oddsError}件 / 反映失敗{failed}件");
+                $"発売前{notOnSale}件 / オッズ取得エラー{oddsError}件 / 反映失敗{failed}件 " +
+                $"（所要 {(DateTime.Now - started).TotalMinutes:0.0}分）");
 
             // 「1件も新規が無い」は正常な状態でも起きる（前回までに全レース反映済み）。
             // また、朝の早い時間帯はオッズがまだ配信されておらず0件が正常
