@@ -83,10 +83,21 @@ namespace KeibaDataCollector.WordPress
         /// 「朝一時点のオッズによる人気順」という本来の意味から離れていく。
         /// 戻り値は実際に書き込んだかどうか。
         /// </summary>
-        public async Task<bool> HasPredictionsAsync(RaceKey key)
+        /// <summary>
+        /// 予想生成でこのレースを飛ばしてよいか。
+        ///
+        /// 飛ばす条件は2つ。
+        ///  ・既に予想が入っている（最初に取れた値を残すため上書きしない）
+        ///  ・既に結果が出ている
+        ///
+        /// 後者は速さのためだけではない。終わったレースのオッズは確定オッズなので、
+        /// それで印を付けると「結果を見てから当てた予想」を載せることになる。
+        /// 発走前に出せなかったレースは、予想なしのままにしておくのが正しい。
+        /// </summary>
+        public async Task<bool> ShouldSkipPredictionAsync(RaceKey key)
         {
             var existing = await FindPostByRaceKeyAsync(key.AsSlug());
-            return existing != null && existing.HasPredictions;
+            return existing != null && (existing.HasPredictions || existing.HasRaceResult);
         }
 
         public async Task<bool> UpsertPredictionsAsync(RaceKey key, Dictionary<int, string> marks)
