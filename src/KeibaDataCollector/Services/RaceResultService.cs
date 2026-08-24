@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -293,15 +293,28 @@ namespace KeibaDataCollector.Services
             // 内容が前回から変わっていなければWordPressへは送られない。その場合ログも出さない
             // （速報段階で止まっているレースが毎回同じ行を出力し続けるのを防ぐ）。
             var published = await _wp.PublishRaceResultAsync(result);
+            // 払戻が取れていないうちは監視を終えない。
+            //
+            // データ区分6/7（全馬着順確定）はRA/SEレコードだけで判定されるため、
+            // 払戻(HR)がまだ届いていない状態でも「確定」になりうる。
+            // そこで監視対象から外すと、あとからHRが届いても二度と取りに行かず、
+            // 着順はあるのに払戻が空のまま残る。
+            // 実際に発生した（2026-08-24: 結果29レースに対し払戻5レース。
+            // 盛岡は1〜4Rに払戻があり5R以降が空という形で表面化した）。
+            var confirmed = isComplete && result.Payouts.Count > 0;
+
             if (published)
             {
+                var state = confirmed ? " 確定"
+                          : isComplete ? " 着順確定・払戻待ち"
+                          : " 速報・続報待ち";
                 Console.WriteLine(
                     $"[{_source.SourceName}] {raceKey.AsSlug()} 反映（着順{result.Entries.Count}件, " +
                     $"払戻{result.Payouts.Count}件, コーナー{result.CornerPassage.Count}件, " +
-                    $"データ区分[{string.Join(",", seenDataKubun)}]{(isComplete ? " 確定" : " 速報・続報待ち")}）");
+                    $"データ区分[{string.Join(",", seenDataKubun)}]{state}）");
             }
 
-            return isComplete;
+            return confirmed;
         }
 
         /// <summary>速報オッズ("0B31" 単複枠)から単勝オッズ・単勝人気順を取得し、
