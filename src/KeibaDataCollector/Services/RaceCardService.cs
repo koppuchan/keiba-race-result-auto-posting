@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using KeibaDataCollector.Interop;
@@ -126,15 +126,45 @@ namespace KeibaDataCollector.Services
                 $"対象日({targetDate:yyyy-MM-dd})以外の日付={string.Join(",", otherDates)}, " +
                 $"種別内訳=[{typeBreakdown}]");
 
+            // 1レースの反映に失敗しても、残りのレースは必ず試す。
+            //
+            // 実際に発生した障害（2026-08-25）: 船橋10Rの送信でWordPressが503を返し、
+            // そこで例外が上まで抜けて以降のレースが全て中断した。
+            // 船橋10〜12Rと笠松の全10レースに出走表が入らず、
+            // 予想ページの馬名が空欄のまま公開された。
+            // 一時的な不調は WordPressClient 側で再試行するが、それでも駄目だった1件のために
+            // その日の残り全部を落としてはいけない。
+            var failures = new List<string>();
+
             foreach (var slug in entriesByRace.Keys)
             {
                 var entries = entriesByRace[slug];
                 entries.Sort((a, b) => a.Umaban.CompareTo(b.Umaban));
-                _wp.UpsertRaceCardAsync(raceKeys[slug], entries).GetAwaiter().GetResult();
-                Console.WriteLine($"[{_source.SourceName}] {slug} 出走表 {entries.Count}頭 反映完了");
+                try
+                {
+                    _wp.UpsertRaceCardAsync(raceKeys[slug], entries).GetAwaiter().GetResult();
+                    Console.WriteLine($"[{_source.SourceName}] {slug} 出走表 {entries.Count}頭 反映完了");
+                }
+                catch (Exception ex)
+                {
+                    failures.Add(slug);
+                    Console.WriteLine($"[{_source.SourceName}] {slug} 出走表の反映に失敗（このレースのみスキップ）: {ex.Message}");
+                }
             }
 
-            Console.WriteLine($"[{_source.SourceName}] {targetDate:yyyy-MM-dd} 出走表 {entriesByRace.Count}レース 反映完了");
+            var succeeded = entriesByRace.Count - failures.Count;
+            Console.WriteLine(
+                $"[{_source.SourceName}] {targetDate:yyyy-MM-dd} 出走表 {succeeded}/{entriesByRace.Count}レース 反映完了" +
+                (failures.Count > 0 ? $"（失敗{failures.Count}件: {string.Join(", ", failures)}）" : ""));
+
+            // 失敗が残ったことは終了コードに出す。黙って成功扱いにすると、
+            // 出走表が欠けたまま公開されていることに誰も気付けない。
+            if (failures.Count > 0)
+            {
+                throw new InvalidOperationException(
+                    $"{_source.SourceName} 出走表の反映に失敗したレースがあります（{failures.Count}件）。" +
+                    "再実行すると未反映ぶんだけ入ります。");
+            }
         }
     }
 }
