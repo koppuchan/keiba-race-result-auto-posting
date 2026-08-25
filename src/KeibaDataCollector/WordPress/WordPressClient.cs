@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
@@ -223,21 +224,82 @@ namespace KeibaDataCollector.WordPress
             public int PredictionMarkCount { get; set; }
         }
 
+        /// <summary>
+        /// 一時的なサーバー側の不調。時間をおけば直る種類のもの。
+        /// 共有ホスティングでは混雑時に503が返ることがある。
+        /// </summary>
+        private static bool IsTransient(HttpStatusCode status)
+        {
+            return status == HttpStatusCode.ServiceUnavailable      // 503
+                || status == HttpStatusCode.BadGateway              // 502
+                || status == HttpStatusCode.GatewayTimeout          // 504
+                || status == HttpStatusCode.RequestTimeout          // 408
+                || (int) status == 429;                             // Too Many Requests
+        }
+
+        // 一時的な失敗は待って何度か試す。間隔は倍々に広げる。
+        private static readonly TimeSpan[] RetryDelays =
+        {
+            TimeSpan.FromSeconds(2),
+            TimeSpan.FromSeconds(5),
+            TimeSpan.FromSeconds(15),
+            TimeSpan.FromSeconds(30),
+        };
+
+        /// <summary>
+        /// WordPressへ送る。一時的なエラーは待って再試行する。
+        ///
+        /// 実際に発生した障害（2026-08-25）:
+        ///   朝一バッチが船橋10Rで503を受け、そこで例外になって以降が全て中断した。
+        ///   船橋10〜12Rと笠松の全10レースに出走表が入らず、
+        ///   予想ページの馬名が空欄のまま公開された。
+        ///   1回の一時的な不調で、その日の残り全部を落としてはいけない。
+        /// </summary>
         private async Task SendAsync(int? existingId, object payload)
         {
             var json = JsonConvert.SerializeObject(payload);
-            var content = new StringContent(json, Encoding.UTF8, "application/json");
 
             var path = existingId.HasValue
                 ? $"{_baseUrl}/wp-json/wp/v2/race/{existingId.Value}"
                 : $"{_baseUrl}/wp-json/wp/v2/race";
 
-            var response = await _http.PostAsync(path, content);
-            if (!response.IsSuccessStatusCode)
+            for (int attempt = 0; ; attempt++)
             {
-                var body = await response.Content.ReadAsStringAsync();
-                throw new InvalidOperationException($"WordPress API failed ({response.StatusCode}): {body}");
+                HttpStatusCode status;
+                string body;
+                try
+                {
+                    // StringContentは送信のたびに作り直す（使い回すと2回目以降に例外になる）。
+                    var content = new StringContent(json, Encoding.UTF8, "application/json");
+                    var response = await _http.PostAsync(path, content);
+                    if (response.IsSuccessStatusCode) return;
+
+                    status = response.StatusCode;
+                    body = await response.Content.ReadAsStringAsync();
+
+                    if (!IsTransient(status) || attempt >= RetryDelays.Length)
+                        throw new InvalidOperationException($"WordPress API failed ({status}): {Summarize(body)}");
+                }
+                catch (HttpRequestException ex) when (attempt < RetryDelays.Length)
+                {
+                    // 接続断・名前解決失敗など。これも時間をおけば直ることが多い。
+                    Console.WriteLine($"WordPressへの送信に失敗（{attempt + 1}回目、{RetryDelays[attempt].TotalSeconds:0}秒後に再試行）: {ex.Message}");
+                    await Task.Delay(RetryDelays[attempt]);
+                    continue;
+                }
+
+                Console.WriteLine(
+                    $"WordPressが{(int) status}を返しました（{attempt + 1}回目、{RetryDelays[attempt].TotalSeconds:0}秒後に再試行）。");
+                await Task.Delay(RetryDelays[attempt]);
             }
+        }
+
+        /// <summary>エラー本文はHTMLで長くなるため、ログに載せる分だけ切り詰める。</summary>
+        private static string Summarize(string body)
+        {
+            if (string.IsNullOrWhiteSpace(body)) return "(本文なし)";
+            var oneLine = System.Text.RegularExpressions.Regex.Replace(body, @"\s+", " ").Trim();
+            return oneLine.Length <= 200 ? oneLine : oneLine.Substring(0, 200) + "…";
         }
 
         private class WpPost
