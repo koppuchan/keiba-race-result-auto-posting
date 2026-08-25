@@ -3,7 +3,7 @@
  * Plugin Name: Keiba Race Sync
  * Description: JV-Link/UmaConn連携の常駐アプリ（KeibaDataCollector）から送られる出走表・結果データを受け取り、
  *              カスタム投稿タイプ「race」として保存・表示する。
- * Version: 0.2.0
+ * Version: 0.2.1
  */
 
 if (!defined('ABSPATH')) {
@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
 define('KEIBA_RACE_SYNC_JSON_META_KEYS', array('race_card', 'race_result', 'payouts', 'corner_passage'));
 
 // 稼働中のバージョン確認用（/wp-json/keiba-race-sync/v1/health で参照）。
-define('KEIBA_RACE_SYNC_VERSION', '0.2.0');
+define('KEIBA_RACE_SYNC_VERSION', '0.2.1');
 
 // CSS/JS のキャッシュ更新用。アセットを変更したらここを上げる。
 define('KEIBA_RACE_SYNC_ASSET_VER', '0.3.0');
@@ -474,6 +474,15 @@ function keiba_race_sync_line_only_notice()
  */
 function keiba_race_sync_render_prediction($post_id)
 {
+    // 結果が出たレースは、結果・払戻まで含めた通常表示に切り替える。
+    // 予想を見にきた方がそのまま答え合わせまでできたほうが使いやすい、というご要望による。
+    // 通常表示の着順テーブルには「予想」列が出るので、印はそちらで確認できる。
+    // ここで予想テーブルを別に出すと同じ内容が二重に並ぶため出さない。
+    $race_result = keiba_race_sync_decode_meta($post_id, 'race_result');
+    if (!empty($race_result)) {
+        return keiba_race_sync_render_race($post_id);
+    }
+
     ob_start();
     echo '<div class="keiba-race">';
 
