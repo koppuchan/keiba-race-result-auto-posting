@@ -3,7 +3,7 @@
  * Plugin Name: Keiba Race Sync
  * Description: JV-Link/UmaConn連携の常駐アプリ（KeibaDataCollector）から送られる出走表・結果データを受け取り、
  *              カスタム投稿タイプ「race」として保存・表示する。
- * Version: 0.2.1
+ * Version: 0.2.3
  */
 
 if (!defined('ABSPATH')) {
@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
 define('KEIBA_RACE_SYNC_JSON_META_KEYS', array('race_card', 'race_result', 'payouts', 'corner_passage'));
 
 // 稼働中のバージョン確認用（/wp-json/keiba-race-sync/v1/health で参照）。
-define('KEIBA_RACE_SYNC_VERSION', '0.2.1');
+define('KEIBA_RACE_SYNC_VERSION', '0.2.3');
 
 // CSS/JS のキャッシュ更新用。アセットを変更したらここを上げる。
 define('KEIBA_RACE_SYNC_ASSET_VER', '0.3.0');
@@ -472,74 +472,27 @@ function keiba_race_sync_line_only_notice()
  * LINEアプリ内で開かれるため。14列の結果表は横スクロールが必要になり、
  * 「印を確認する」という目的に対して情報が多すぎる。
  */
+/**
+ * 予想ページ（view="prediction"）の表示。
+ *
+ * 結果ページと同じ内容を返す。以前は印・馬番・馬名の3列だけに絞っていたが、
+ * それだと枠・性齢・斤量・騎手・厩舎が出ず、お客様から
+ * 「予想は表示されているが出馬表が表示されない」とご指摘をいただいた。
+ *
+ * 通常表示は
+ *   発走前 … 出馬表（「予想」列に印が入る）
+ *   発走後 … 着順・払戻・コーナー通過順
+ * と切り替わるため、これ1つで予想・出馬表・結果のすべてが1ページに収まる。
+ * 「予想とレース結果が1つになっている方が使い勝手が良い」というご要望にも合う。
+ *
+ * 表示を2種類持つと、どちらかだけ直して食い違う事故が起きる。実際に、
+ * 3列版だけ出走馬が絞られていたことと、ブラウザに残った旧JSがview指定を送らず
+ * 端末によって見え方が変わることが重なり、原因の切り分けに時間を要した。
+ * 表示は1つに統一しておく。
+ */
 function keiba_race_sync_render_prediction($post_id)
 {
-    // 結果が出たレースは、結果・払戻まで含めた通常表示に切り替える。
-    // 予想を見にきた方がそのまま答え合わせまでできたほうが使いやすい、というご要望による。
-    // 通常表示の着順テーブルには「予想」列が出るので、印はそちらで確認できる。
-    // ここで予想テーブルを別に出すと同じ内容が二重に並ぶため出さない。
-    $race_result = keiba_race_sync_decode_meta($post_id, 'race_result');
-    if (!empty($race_result)) {
-        return keiba_race_sync_render_race($post_id);
-    }
-
-    ob_start();
-    echo '<div class="keiba-race">';
-
-    if (get_post_meta($post_id, 'line_only', true)) {
-        echo '<p class="keiba-line-only">' . esc_html(keiba_race_sync_line_only_notice()) . '</p>';
-        echo '</div>';
-        return ob_get_clean();
-    }
-
-    $predictions = keiba_race_sync_decode_meta($post_id, 'predictions');
-    if (empty($predictions)) {
-        echo '<p class="keiba-selector-empty">このレースの予想はまだ公開されていません。</p>';
-        echo '</div>';
-        return ob_get_clean();
-    }
-
-    // 馬名は出走表から引く。結果しか無い場合は結果側から拾う。
-    $entries = keiba_race_sync_decode_meta($post_id, 'race_card');
-    if (empty($entries)) {
-        $entries = keiba_race_sync_decode_meta($post_id, 'race_result');
-    }
-    $names = array();
-    foreach ($entries as $e) {
-        if (isset($e['umaban'])) {
-            $names[(string) (int) $e['umaban']] = $e['horseName'] ?? '';
-        }
-    }
-
-    // 印の強い順に並べる。馬番順のままだと「どれが本命か」が一目で分からない。
-    $order = array('◎' => 1, '○' => 2, '▲' => 3, '△' => 4, '☆' => 5, '×' => 6);
-    $rows = array();
-    foreach ($predictions as $umaban => $mark) {
-        $rows[] = array(
-            'umaban' => (int) $umaban,
-            'mark'   => (string) $mark,
-            'name'   => isset($names[(string) (int) $umaban]) ? $names[(string) (int) $umaban] : '',
-        );
-    }
-    usort($rows, function ($a, $b) use ($order) {
-        $oa = isset($order[$a['mark']]) ? $order[$a['mark']] : 99;
-        $ob = isset($order[$b['mark']]) ? $order[$b['mark']] : 99;
-        return $oa === $ob ? $a['umaban'] - $b['umaban'] : $oa - $ob;
-    });
-
-    echo '<table class="keiba-table keiba-prediction-table">';
-    echo '<thead><tr><th>印</th><th>馬番</th><th>馬名</th></tr></thead><tbody>';
-    foreach ($rows as $r) {
-        echo '<tr>';
-        echo '<td class="keiba-yosou">' . esc_html($r['mark']) . '</td>';
-        echo '<td>' . esc_html($r['umaban']) . '</td>';
-        echo '<td>' . esc_html($r['name']) . '</td>';
-        echo '</tr>';
-    }
-    echo '</tbody></table>';
-    echo '</div>';
-
-    return ob_get_clean();
+    return keiba_race_sync_render_race($post_id);
 }
 
 function keiba_race_sync_render_race($post_id)
