@@ -3,7 +3,7 @@
  * Plugin Name: Keiba Race Sync
  * Description: JV-Link/UmaConn連携の常駐アプリ（KeibaDataCollector）から送られる出走表・結果データを受け取り、
  *              カスタム投稿タイプ「race」として保存・表示する。
- * Version: 0.2.3
+ * Version: 0.3.0
  */
 
 if (!defined('ABSPATH')) {
@@ -13,10 +13,10 @@ if (!defined('ABSPATH')) {
 define('KEIBA_RACE_SYNC_JSON_META_KEYS', array('race_card', 'race_result', 'payouts', 'corner_passage'));
 
 // 稼働中のバージョン確認用（/wp-json/keiba-race-sync/v1/health で参照）。
-define('KEIBA_RACE_SYNC_VERSION', '0.2.3');
+define('KEIBA_RACE_SYNC_VERSION', '0.3.0');
 
 // CSS/JS のキャッシュ更新用。アセットを変更したらここを上げる。
-define('KEIBA_RACE_SYNC_ASSET_VER', '0.3.0');
+define('KEIBA_RACE_SYNC_ASSET_VER', '0.4.0');
 
 /**
  * カスタム投稿タイプ「race」を登録。
@@ -357,6 +357,8 @@ add_action('rest_api_init', function () {
                 // 対応表に無い競馬場コード。空でなければ名称の追加が必要。
                 'unknownTracks' => get_option('keiba_race_sync_unknown_tracks', new stdClass()),
                 'rocketCacheRoot' => (realpath(WP_CONTENT_DIR . '/cache/wp-rocket') !== false),
+                // 連携先が見つからないと全レースが鍵付きになる。外から気付けるようにする。
+                'hrcAvailable' => keiba_race_sync_hrc_available(),
                 'purgeApis' => array(
                     'rocket' => function_exists('rocket_clean_post'),
                     'superCache' => function_exists('wp_cache_post_change'),
@@ -495,8 +497,80 @@ function keiba_race_sync_render_prediction($post_id)
     return keiba_race_sync_render_race($post_id);
 }
 
+/* ------------------------------------------------------------------------- *
+ * 無料公開レースの判定（horse-race-custom-builder 連携）
+ *
+ * 判定そのものは hrc 側が持っている。当プラグインは指数もLINE認証も持たないので、
+ * 自前で判定を作らず hrc の答えをそのまま使う。
+ * 二重に作ると「片方だけ解放される」「ログイン状態が食い違う」といった事故になる。
+ * ------------------------------------------------------------------------- */
+
+/**
+ * このレースを閲覧してよいか。
+ *
+ * hrc_is_race_visible() は
+ *   ・本日の無料公開レース  → 誰でも true
+ *   ・それ以外              → LINE登録済みなら true
+ * を返す（hrc側の実装）。
+ *
+ * hrc が無効・未導入のときは false（＝非公開）に倒す。
+ * 有料相当の内容なので、判定できないときに公開してしまうより伏せるほうが安全。
+ * ただし黙って全レースが鍵付きになると原因が分からなくなるため、必ず記録する。
+ */
+function keiba_race_sync_is_race_visible($race_key)
+{
+    if (function_exists('hrc_is_race_visible')) {
+        return (bool) hrc_is_race_visible($race_key);
+    }
+
+    // 連携先が見当たらない。全レースが鍵付きになるので、気付けるようにしておく。
+    if (!get_transient('keiba_race_sync_hrc_missing')) {
+        set_transient('keiba_race_sync_hrc_missing', current_time('mysql'), DAY_IN_SECONDS);
+    }
+    return false;
+}
+
+/** 連携先が見つからない状態か（health エンドポイントと管理画面の警告で使う）。 */
+function keiba_race_sync_hrc_available()
+{
+    return function_exists('hrc_is_race_visible');
+}
+
+/**
+ * 鍵付きレースの表示。
+ *
+ * 中身は一切出さない。ここで「一部だけ隠す」といった作りにすると、
+ * HTMLには残っているのに見た目だけ隠す実装になりがちで、簡単に回避される。
+ */
+function keiba_race_sync_render_locked()
+{
+    ob_start();
+    echo '<div class="keiba-race">';
+    echo '<div class="keiba-locked">';
+    echo '<p class="keiba-locked-title">🔒 このレースはLINE登録限定です</p>';
+    echo '<p class="keiba-locked-lead">'
+        . esc_html(apply_filters(
+            'keiba_race_sync_locked_lead',
+            '本日の無料公開レース以外は、LINE登録で全レースが解放されます。'))
+        . '</p>';
+    // 認証URLは毎回発行し直す必要がある（stateが都度変わるため、URLを埋め込むと再利用で失敗する）。
+    // そのため押された時点で取得してから遷移する。
+    echo '<button type="button" class="keiba-line-cta">LINE登録して全レースを見る</button>';
+    echo '<p class="keiba-locked-note">登録は無料です。</p>';
+    echo '</div></div>';
+    return ob_get_clean();
+}
+
 function keiba_race_sync_render_race($post_id)
 {
+    // 閲覧可否は描画の最初に判定する。表示用HTMLを組み立てる前に打ち切ることで、
+    // 鍵付きレースの内容がHTMLに一切含まれないようにする。
+    // RESTも同じこの関数を通るため、APIを直接叩いても中身は取れない。
+    $race_key = get_post_meta($post_id, 'race_key', true);
+    if ($race_key && !keiba_race_sync_is_race_visible($race_key)) {
+        return keiba_race_sync_render_locked();
+    }
+
     $race_card = keiba_race_sync_decode_meta($post_id, 'race_card');
     $race_result = keiba_race_sync_decode_meta($post_id, 'race_result');
     $payouts = keiba_race_sync_decode_meta($post_id, 'payouts');
@@ -984,12 +1058,24 @@ add_shortcode('keiba_race_selector', function ($atts) {
     foreach ($tracks as $track) {
         printf('<div class="keiba-race-grid" data-track="%s" hidden>', esc_attr($track['code']));
         foreach ($track['races'] as $race) {
+            // 鍵のマークは一覧の時点で出す。開いてから初めて鍵と分かるより、
+            // どれが無料で見られるかが先に分かるほうが親切なため。
+            //
+            // 注意: この一覧ページはページキャッシュに載る。鍵の有無は閲覧者によって
+            // 変わるので、キャッシュされた見た目が実態と食い違うことがある。
+            // ただし中身そのものは毎回RESTで取り直し、その都度サーバー側で判定するため、
+            // 鍵付きレースの内容がキャッシュ経由で漏れることはない。ここは目印に留める。
+            $locked  = !keiba_race_sync_is_race_visible($race['race_key']);
+            $classes = ($race['has_result'] ? ' is-finished' : '') . ($locked ? ' is-locked' : '');
+            $badge   = $locked
+                ? '<small>🔒</small>'
+                : ($race['has_result'] ? '<small>結果</small>' : '<small>無料</small>');
             printf(
                 '<button type="button" class="keiba-race-btn%s" data-race-key="%s">%dR%s</button>',
-                $race['has_result'] ? ' is-finished' : '',
+                $classes,
                 esc_attr($race['race_key']),
                 $race['number'],
-                $race['has_result'] ? '<small>結果</small>' : ''
+                $badge
             );
         }
         echo '</div>';
