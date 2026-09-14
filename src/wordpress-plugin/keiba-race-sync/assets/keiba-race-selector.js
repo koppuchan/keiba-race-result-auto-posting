@@ -9,6 +9,35 @@
 
     var endpoint = (window.keibaRaceSelector && window.keibaRaceSelector.endpoint) || '';
 
+    // 鍵付きレースの「LINE登録して全レースを見る」ボタン。
+    //
+    // 認証URLは押された時点で取得する。URLに含まれる state は毎回変わるため、
+    // ページ生成時に埋め込むと、キャッシュされたページから使い回されて認証が失敗する。
+    document.addEventListener('click', function (event) {
+        var btn = event.target.closest && event.target.closest('.keiba-line-cta');
+        if (!btn) {
+            return;
+        }
+        btn.disabled = true;
+        var original = btn.textContent;
+        btn.textContent = '読み込み中...';
+
+        fetch('/wp-json/hrc/v1/line/login-url', { credentials: 'same-origin' })
+            .then(function (res) { return res.json(); })
+            .then(function (data) {
+                if (data && data.url) {
+                    window.location.href = data.url;
+                    return;
+                }
+                throw new Error('no url');
+            })
+            .catch(function () {
+                btn.disabled = false;
+                btn.textContent = original;
+                alert('LINE登録ページを開けませんでした。時間をおいて再度お試しください。');
+            });
+    });
+
     document.querySelectorAll('.keiba-selector').forEach(function (root) {
         var trackButtons = root.querySelectorAll('.keiba-track-btn');
         var stepRaces = root.querySelector('.keiba-step-races');

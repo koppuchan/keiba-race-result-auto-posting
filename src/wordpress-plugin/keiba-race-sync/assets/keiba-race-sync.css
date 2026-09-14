@@ -285,3 +285,49 @@
         font-size: 0.85em;
     }
 }
+
+/* 鍵付きレース（LINE登録限定） */
+.keiba-locked {
+    padding: 2em 1.5em;
+    text-align: center;
+    background: #f7f7f7;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+}
+
+.keiba-locked-title {
+    margin: 0 0 .6em;
+    font-size: 1.15em;
+    font-weight: bold;
+}
+
+.keiba-locked-lead {
+    margin: 0 0 1.4em;
+    color: #555;
+}
+
+.keiba-line-cta {
+    display: inline-block;
+    padding: .9em 2em;
+    font-size: 1.05em;
+    font-weight: bold;
+    color: #fff;
+    background: #06c755;      /* LINEブランドカラー */
+    border: 0;
+    border-radius: 999px;
+    cursor: pointer;
+}
+
+.keiba-line-cta:hover { background: #05b34c; }
+.keiba-line-cta:disabled { opacity: .6; cursor: default; }
+
+.keiba-locked-note {
+    margin: .9em 0 0;
+    font-size: .85em;
+    color: #777;
+}
+
+/* 一覧で鍵付きのレースは控えめに見せる（無料のレースを目立たせるため） */
+.keiba-race-btn.is-locked {
+    opacity: .65;
+}
