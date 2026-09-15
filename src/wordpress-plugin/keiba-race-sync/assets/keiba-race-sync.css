@@ -331,3 +331,45 @@
 .keiba-race-btn.is-locked {
     opacity: .65;
 }
+
+/* 無料公開レースの案内（一覧の先頭）。
+   登録前の閲覧者にだけ出る。hrc側のバナーと雰囲気を揃えている。 */
+.keiba-free-promo {
+    margin: 0 0 1.6em;
+    padding: 1.4em 1.2em;
+    text-align: center;
+    background: linear-gradient(180deg, #fffdf3 0%, #fff8e1 100%);
+    border: 1px solid #f0ddaa;
+    border-radius: 10px;
+}
+
+.keiba-free-promo p {
+    margin: 0 0 .5em;
+    line-height: 1.6;
+}
+
+.keiba-free-promo-headline {
+    font-size: 1.15em;
+    font-weight: bold;
+    color: #8a6100;
+}
+
+.keiba-free-promo-arrow {
+    margin: .3em 0;
+    color: #b08a2e;
+    font-size: 1.3em;
+    line-height: 1;
+}
+
+.keiba-free-promo .keiba-line-cta {
+    margin-top: .8em;
+}
+
+@media (max-width: 480px) {
+    .keiba-free-promo {
+        padding: 1.2em .9em;
+    }
+    .keiba-free-promo-headline {
+        font-size: 1.05em;
+    }
+}
