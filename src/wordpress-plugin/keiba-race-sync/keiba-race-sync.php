@@ -3,7 +3,7 @@
  * Plugin Name: Keiba Race Sync
  * Description: JV-Link/UmaConn連携の常駐アプリ（KeibaDataCollector）から送られる出走表・結果データを受け取り、
  *              カスタム投稿タイプ「race」として保存・表示する。
- * Version: 0.3.0
+ * Version: 0.3.1
  */
 
 if (!defined('ABSPATH')) {
@@ -13,10 +13,10 @@ if (!defined('ABSPATH')) {
 define('KEIBA_RACE_SYNC_JSON_META_KEYS', array('race_card', 'race_result', 'payouts', 'corner_passage'));
 
 // 稼働中のバージョン確認用（/wp-json/keiba-race-sync/v1/health で参照）。
-define('KEIBA_RACE_SYNC_VERSION', '0.3.0');
+define('KEIBA_RACE_SYNC_VERSION', '0.3.1');
 
 // CSS/JS のキャッシュ更新用。アセットを変更したらここを上げる。
-define('KEIBA_RACE_SYNC_ASSET_VER', '0.4.0');
+define('KEIBA_RACE_SYNC_ASSET_VER', '0.4.1');
 
 /**
  * カスタム投稿タイプ「race」を登録。
@@ -519,8 +519,16 @@ function keiba_race_sync_render_prediction($post_id)
  */
 function keiba_race_sync_is_race_visible($race_key)
 {
+    // 同じレースの判定を1リクエスト内で何度も引かないよう覚えておく。
+    // 一覧では「案内文を出すか」と「各ボタンの鍵」で2周するため、
+    // これが無いとレース数の倍だけ問い合わせることになる。
+    static $memo = array();
+    if (isset($memo[$race_key])) {
+        return $memo[$race_key];
+    }
+
     if (function_exists('hrc_is_race_visible')) {
-        return (bool) hrc_is_race_visible($race_key);
+        return $memo[$race_key] = (bool) hrc_is_race_visible($race_key);
     }
 
     // 連携先が見当たらない。全レースが鍵付きになるので、気付けるようにしておく。
@@ -534,6 +542,27 @@ function keiba_race_sync_is_race_visible($race_key)
 function keiba_race_sync_hrc_available()
 {
     return function_exists('hrc_is_race_visible');
+}
+
+/**
+ * 無料公開レースの案内文。
+ *
+ * 「1レースだけ無料 → LINE登録で全レース」という導線を最初に伝えるためのもの。
+ * 鍵付きレースが1つでもある＝まだ登録前の閲覧者にだけ出す。
+ * 登録済みの方には全レース見えている状態なので、案内を出しても意味がない。
+ */
+function keiba_race_sync_render_free_promo()
+{
+    ob_start();
+    echo '<div class="keiba-free-promo">';
+    echo '<p class="keiba-free-promo-headline">⭐ まずは1レース完全無料</p>';
+    echo '<p>登録なしで、本日のおすすめレース1鞍の予想をそのままご覧いただけます。</p>';
+    echo '<p class="keiba-free-promo-arrow">↓</p>';
+    echo '<p class="keiba-free-promo-headline">LINE無料登録で全レース開放</p>';
+    echo '<p>1Rから最終レースまで、本日提供している全レースの予想が見放題になります。</p>';
+    echo '<button type="button" class="keiba-line-cta">LINE無料登録して全レースを見る</button>';
+    echo '</div>';
+    return ob_get_clean();
 }
 
 /**
@@ -1037,6 +1066,21 @@ add_shortcode('keiba_race_selector', function ($atts) {
     }
 
     echo '<div class="keiba-selector" data-date="' . esc_attr($ymd) . '" data-view="' . esc_attr($view) . '">';
+
+    // 鍵付きのレースが残っているか＝まだ登録前の閲覧者か。
+    // 判定結果は使い回されるので、ここで全レース分引いても問い合わせは増えない。
+    $has_locked = false;
+    foreach ($tracks as $t) {
+        foreach ($t['races'] as $r) {
+            if (!keiba_race_sync_is_race_visible($r['race_key'])) {
+                $has_locked = true;
+                break 2;
+            }
+        }
+    }
+    if ($has_locked) {
+        echo keiba_race_sync_render_free_promo();
+    }
 
     // STEP 1: 競馬場
     echo '<div class="keiba-step">';
