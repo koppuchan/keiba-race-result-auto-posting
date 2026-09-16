@@ -3,7 +3,7 @@
  * Plugin Name: Keiba Race Sync
  * Description: JV-Link/UmaConn連携の常駐アプリ（KeibaDataCollector）から送られる出走表・結果データを受け取り、
  *              カスタム投稿タイプ「race」として保存・表示する。
- * Version: 0.3.1
+ * Version: 0.3.2
  */
 
 if (!defined('ABSPATH')) {
@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
 define('KEIBA_RACE_SYNC_JSON_META_KEYS', array('race_card', 'race_result', 'payouts', 'corner_passage'));
 
 // 稼働中のバージョン確認用（/wp-json/keiba-race-sync/v1/health で参照）。
-define('KEIBA_RACE_SYNC_VERSION', '0.3.1');
+define('KEIBA_RACE_SYNC_VERSION', '0.3.2');
 
 // CSS/JS のキャッシュ更新用。アセットを変更したらここを上げる。
 define('KEIBA_RACE_SYNC_ASSET_VER', '0.4.1');
@@ -1111,9 +1111,15 @@ add_shortcode('keiba_race_selector', function ($atts) {
             // 鍵付きレースの内容がキャッシュ経由で漏れることはない。ここは目印に留める。
             $locked  = !keiba_race_sync_is_race_visible($race['race_key']);
             $classes = ($race['has_result'] ? ' is-finished' : '') . ($locked ? ' is-locked' : '');
-            $badge   = $locked
+
+            // 鍵が外れているレースに「無料」とは書かない。
+            // 外れている理由は「本日の無料公開レースだから」と「LINE登録済みだから」の
+            // 2通りあり、ここでは区別できない。登録済みの方には全レースが解放されるため、
+            // そのまま出すと全レースに「無料」が並んでしまう（お客様からご指摘をいただいた）。
+            // 無料で見られるレースは、鍵が付いていないことで分かる。
+            $badge = $locked
                 ? '<small>🔒</small>'
-                : ($race['has_result'] ? '<small>結果</small>' : '<small>無料</small>');
+                : ($race['has_result'] ? '<small>結果</small>' : '');
             printf(
                 '<button type="button" class="keiba-race-btn%s" data-race-key="%s">%dR%s</button>',
                 $classes,
