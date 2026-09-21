@@ -162,11 +162,58 @@ namespace KeibaDataCollector.WordPress
                     race_result = raceResultJson,
                     payouts = payoutsJson,
                     corner_passage = cornerPassageJson,
+                    // 中止の印は、本物の成績が届いた時点で外す。
+                    // 中止はあとから取り消されうるため（誤配信の訂正など）、
+                    // 一度付いた印が永久に残らないようにしておく。
+                    // 中止のままのレースには成績が来ない（仕様書 p.38「４．払戻 提供なし」）ので、
+                    // ここを通ることはなく、誤って解除されることもない。
+                    race_status = "",
                 }
             };
             await SendAsync(existing?.Id, payload);
 
             // 送信に成功した場合のみ記録する（失敗時は次回リトライさせたいため）。
+            _lastPublishedResult[slug] = signature;
+            return true;
+        }
+
+        /// <summary>
+        /// レースを「中止」として記録する。表示側はこの印が付いたレースを一覧から外す。
+        ///
+        /// 投稿を消さずに印だけ付けるのは、中止は取り消されうるため
+        /// （発走時刻変更・代替開催など、あとから通常のレコードが流れてくる可能性がある）。
+        /// そのとき区分が9以外に戻れば、この印も自動的に外れる。
+        ///
+        /// 着順・払戻も空に戻す。中止の判定より前に速報成績を取り込んでいた場合、
+        /// 中身が残ったままだと表示側が「結果あり」と判断してしまうため。
+        /// </summary>
+        public async Task<bool> MarkRaceCancelledAsync(RaceKey key)
+        {
+            var slug = key.AsSlug();
+            var existing = await FindPostByRaceKeyAsync(slug);
+
+            // そもそも投稿が無ければ、何も出ていないので何もしなくてよい。
+            if (existing == null) return false;
+
+            var signature = "cancelled";
+            if (_lastPublishedResult.TryGetValue(slug, out var previous) && previous == signature)
+                return false;
+
+            var payload = new
+            {
+                title = $"{key.RaceDate:yyyy/MM/dd} {key.TrackCode} {key.RaceNumber}R 中止",
+                status = "publish",
+                meta = new
+                {
+                    race_key = slug,
+                    race_status = "cancelled",
+                    race_result = "[]",
+                    payouts = "[]",
+                    corner_passage = "[]",
+                }
+            };
+            await SendAsync(existing.Id, payload);
+
             _lastPublishedResult[slug] = signature;
             return true;
         }

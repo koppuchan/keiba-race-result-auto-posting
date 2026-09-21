@@ -332,6 +332,17 @@
     opacity: .65;
 }
 
+/* 中止レース。一覧からは外しているが、
+   キャッシュに残ったボタンや直接のリンクから開かれた場合に出る。 */
+.keiba-cancelled {
+    margin: 1em 0;
+    padding: 1em 1.2em;
+    background: #f6f6f6;
+    border-left: 4px solid #999;
+    color: #555;
+    font-weight: bold;
+}
+
 /* 無料公開レースの案内（一覧の先頭）。
    登録前の閲覧者にだけ出る。hrc側のバナーと雰囲気を揃えている。 */
 .keiba-free-promo {
