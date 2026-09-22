@@ -60,14 +60,44 @@ foreach ($task in $AllTasks) {
 $procs = Get-Process KeibaDataCollector -ErrorAction SilentlyContinue
 if ($procs) {
     Write-Output ("  残存プロセスを終了: PID {0}" -f (($procs | ForEach-Object { $_.Id }) -join ', '))
-    $procs | Stop-Process -Force
+    $procs | Stop-Process -Force -ErrorAction SilentlyContinue
+
+    # Stop-Process で落ちないことがある。子プロセスごと落とす taskkill も試す。
+    Start-Sleep -Seconds 1
+    foreach ($p in (Get-Process KeibaDataCollector -ErrorAction SilentlyContinue)) {
+        & taskkill.exe /F /T /PID $p.Id 2>&1 | Out-Null
+    }
+
     for ($i = 0; $i -lt 40; $i++) {          # ロックが解けるまで最大10秒待つ
         Start-Sleep -Milliseconds 250
         if (-not (Get-Process KeibaDataCollector -ErrorAction SilentlyContinue)) { break }
     }
 }
-if (Get-Process KeibaDataCollector -ErrorAction SilentlyContinue) {
-    throw "プロセスが終了しません。ビルドすると失敗するため中断します。VPSの画面にダイアログが出ていないか確認してください。"
+
+$stuck = Get-Process KeibaDataCollector -ErrorAction SilentlyContinue
+if ($stuck) {
+    # どれがいつから残っているのか分からないと、原因の切り分けも復旧もできない。
+    Write-Output ""
+    Write-Output "  終了できないプロセス:"
+    foreach ($p in $stuck) {
+        $since = try { $p.StartTime.ToString('MM/dd HH:mm') } catch { '不明' }
+        Write-Output ("    PID {0}  起動 {1}  応答 {2}" -f $p.Id, $since,
+            $(if ($p.Responding) { 'あり' } else { 'なし' }))
+    }
+    Write-Output ""
+    throw @"
+プロセスが終了しません。exeを置き換えられないため、ビルド前に中断します。
+
+COMの呼び出しが返らないまま止まっている状態で、taskkillでも落ちません。
+タスクスケジューラでタスクを停止しても、これらは既に親から切り離されて
+いるため消えません（タスク自体は「準備完了」に見えているはずです）。
+
+  復旧: VPSを再起動してください。
+        タスクはすべて登録済みなので、再起動後は自動で復帰します。
+        そのうえで、もう一度 deploy.ps1 を実行してください。
+
+ビルド前に中断しているため、中途半端な状態にはなっていません。
+"@
 }
 Write-Output "  実行中のプロセスはありません"
 
