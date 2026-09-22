@@ -3,7 +3,7 @@
  * Plugin Name: Keiba Race Sync
  * Description: JV-Link/UmaConn連携の常駐アプリ（KeibaDataCollector）から送られる出走表・結果データを受け取り、
  *              カスタム投稿タイプ「race」として保存・表示する。
- * Version: 0.4.0
+ * Version: 0.4.1
  */
 
 if (!defined('ABSPATH')) {
@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
 define('KEIBA_RACE_SYNC_JSON_META_KEYS', array('race_card', 'race_result', 'payouts', 'corner_passage'));
 
 // 稼働中のバージョン確認用（/wp-json/keiba-race-sync/v1/health で参照）。
-define('KEIBA_RACE_SYNC_VERSION', '0.4.0');
+define('KEIBA_RACE_SYNC_VERSION', '0.4.1');
 
 // CSS/JS のキャッシュ更新用。アセットを変更したらここを上げる。
 define('KEIBA_RACE_SYNC_ASSET_VER', '0.4.2');
@@ -628,6 +628,14 @@ function keiba_race_sync_render_race($post_id)
     $race_card = keiba_race_sync_decode_meta($post_id, 'race_card');
     $race_result = keiba_race_sync_decode_meta($post_id, 'race_result');
     $payouts = keiba_race_sync_decode_meta($post_id, 'payouts');
+
+    // 着順が1件も入っていない「結果」は結果として扱わない。出走表に戻す。
+    // 走ったレースなら必ず1着がいるので、全馬0着はデータが揃っていない証拠。
+    // 中止レースがこの形になる（仕様書 p.33「※レース中止、出走取消し等は初期値とします」）が、
+    // 原因を中止と決めつけずに「着順が無いなら着順表は出さない」とだけ判断する。
+    if (!keiba_race_sync_has_finisher($race_result)) {
+        $race_result = array();
+    }
     $corner_passage = keiba_race_sync_decode_meta($post_id, 'corner_passage');
 
     // 予想印は毎朝のオッズから自動生成される。入力があるレースだけ「予想」列を出す。
@@ -1068,7 +1076,31 @@ function keiba_race_sync_is_race_cancelled($post_id)
 function keiba_race_sync_has_result($post_id)
 {
     $raw = get_post_meta($post_id, 'race_result', true);
-    return !empty($raw) && trim($raw) !== '[]';
+    if (empty($raw) || trim($raw) === '[]') {
+        return false;
+    }
+    $decoded = json_decode($raw, true);
+    return keiba_race_sync_has_finisher(is_array($decoded) ? $decoded : array());
+}
+
+/**
+ * 着順表に1着以上の馬が1頭でも入っているか。
+ *
+ * 走ったレースなら必ず1着がいる。全馬が0着なら、それは着順ではない。
+ * 中止レースが実際にこの形で届いた（2026-09-21の中山、全12レース）ため、
+ * 「結果」として出してしまうと、走っていないレースに着順表が並ぶことになる。
+ */
+function keiba_race_sync_has_finisher($entries)
+{
+    if (!is_array($entries)) {
+        return false;
+    }
+    foreach ($entries as $entry) {
+        if (is_array($entry) && isset($entry['chakujun']) && (int) $entry['chakujun'] >= 1) {
+            return true;
+        }
+    }
+    return false;
 }
 
 /**
