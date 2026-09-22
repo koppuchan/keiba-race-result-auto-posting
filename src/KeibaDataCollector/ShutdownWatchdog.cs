@@ -30,6 +30,44 @@ namespace KeibaDataCollector
         private static readonly TimeSpan HardKillAfter = TimeSpan.FromSeconds(10);
 
         /// <summary>
+        /// 起動直後に呼ぶ。作業そのものが固まった場合の最後の歯止め。
+        ///
+        /// 実際に発生した障害（2026-09-22）:
+        ///   Arm()は作業が終わったあとにしか動かない。COMの呼び出しが途中で
+        ///   返ってこないと、そこまで到達しないのでプロセスが永久に残る。
+        ///   VPSでKeibaDataCollector.exeが5個（PID 2596/3920/5300/8084/9032）まで溜まり、
+        ///   exeがロックされて deploy.ps1 がビルド前に中断した。
+        ///   Stop-Process -Force でも落ちず、手作業での復旧が必要になった。
+        ///
+        /// 上限は「その用途ならどれだけ遅くてもこれ以内には終わる」値にする。
+        /// 短すぎると正常な実行を切ってしまい、長すぎると歯止めにならない。
+        /// setupは利用キー入力のダイアログを待つ用途なので、呼び出し側で除外する。
+        /// </summary>
+        public static void ArmDeadline(TimeSpan limit, string mode)
+        {
+            var thread = new Thread(() =>
+            {
+                Thread.Sleep(limit);
+
+                Console.WriteLine(
+                    $"[watchdog] {mode}モードが{limit.TotalHours:0.#}時間を超えました。" +
+                    "処理が進んでいないためプロセスを終了します" +
+                    "（残り続けるとexeがロックされ、次回以降の更新ができなくなるため）。");
+                Console.Out.Flush();
+
+                // 作業が途中なので成功扱いにはしない。
+                new Thread(() => Environment.Exit(1)) { IsBackground = true }.Start();
+                Thread.Sleep(HardKillAfter);
+                Process.GetCurrentProcess().Kill();
+            })
+            {
+                IsBackground = true,
+                Name = "shutdown-deadline",
+            };
+            thread.Start();
+        }
+
+        /// <summary>
         /// 作業完了後に呼ぶ。正常に終了できればこの監視は何もしない
         /// （バックグラウンドスレッドなのでプロセス終了を妨げない）。
         /// </summary>

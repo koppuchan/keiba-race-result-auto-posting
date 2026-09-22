@@ -21,6 +21,12 @@ namespace KeibaDataCollector
             // probe のみ第2引数でレースキーを受け取る（例: probe 20260811-46-1R）。
             var arg = args.Length > 1 ? args[1] : null;
 
+            // 作業中に固まってもプロセスが残らないようにする。
+            // setupは利用キー入力のダイアログを人が操作する用途なので対象外。
+            // probeは調査用の手動実行なので、勝手に切らない。
+            var deadline = DeadlineFor(mode);
+            if (deadline.HasValue) ShutdownWatchdog.ArmDeadline(deadline.Value, mode);
+
             try
             {
                 Run(mode, arg);
@@ -39,6 +45,31 @@ namespace KeibaDataCollector
                 return 1;
             }
             return 0;
+        }
+
+        /// <summary>
+        /// モードごとの実行時間の上限。これを超えたら固まったものとして打ち切る。
+        ///
+        /// morning/predict は実測で数分から十数分
+        /// （UmaConnの朝一は約130万件を読むため5分前後かかる）。
+        /// 1時間あれば遅い日でも足りるので、その3倍を上限にする。
+        ///
+        /// watch は RaceResultService.DailyCutoff（当日23:30）まで動くのが正常。
+        /// 起動が0:00でも23.5時間なので、余裕を見て25時間とする。
+        /// </summary>
+        private static TimeSpan? DeadlineFor(string mode)
+        {
+            switch (mode)
+            {
+                case "morning":
+                case "predict":
+                    return TimeSpan.FromHours(3);
+                case "watch":
+                    return TimeSpan.FromHours(25);
+                default:
+                    // setup（ダイアログ待ち）・probe（手動調査）・help は打ち切らない。
+                    return null;
+            }
         }
 
         private static void Run(string mode, string arg = null)
