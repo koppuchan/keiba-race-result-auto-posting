@@ -30,6 +30,10 @@ namespace KeibaDataCollector.Services
         // このレースの最新状態でWordPressへ再送する（Eventually Consistentな即時反映）。
         private readonly Dictionary<string, RaceResult> _buffers = new Dictionary<string, RaceResult>();
 
+        // 中止を反映済みのレース。一覧は一定間隔で取り直すため、
+        // これが無いと同じ中止レースに毎回WordPressへ書きに行ってしまう。
+        private readonly HashSet<string> _cancelledNotified = new HashSet<string>();
+
         public RaceResultService(IRaceDataSource source, WordPressClient wp, TimeSpan pollInterval)
         {
             _source = source;
@@ -142,15 +146,41 @@ namespace KeibaDataCollector.Services
         /// 取得に失敗しても、既に監視中のレースは止めない。</summary>
         private void MergeDiscoveredRaces(DateTime targetDate, List<RaceKey> pending, HashSet<string> completed)
         {
-            List<RaceKey> discovered;
+            RaceDiscovery.RaceListing listing;
             try
             {
-                discovered = DiscoverTodaysRaceKeys(targetDate);
+                listing = RaceDiscovery.Scan(_source, targetDate);
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"[{_source.SourceName}] レース一覧の取り直しに失敗（監視は継続）: {ex.Message}");
                 return;
+            }
+
+            var discovered = listing.Active;
+
+            // 中止が蓄積系に載るのは開催の翌日以降なので、ここで拾えるのは主に前日以前のぶん。
+            // 当日ぶんは CheckAndPublishRaceAsync が速報系の区分9で先に片付けている。
+            // 公開済みの投稿が無ければ MarkRaceCancelledAsync は何もしない。
+            foreach (var raceKey in listing.Cancelled)
+            {
+                var slug = raceKey.AsSlug();
+                if (!_cancelledNotified.Add(slug)) continue;
+
+                try
+                {
+                    if (_wp.MarkRaceCancelledAsync(raceKey).GetAwaiter().GetResult())
+                        Console.WriteLine($"[{_source.SourceName}] {slug} 中止のため非表示にしました");
+                }
+                catch (Exception ex)
+                {
+                    // 次回の取り直しでやり直せるよう、記録を取り消しておく。
+                    _cancelledNotified.Remove(slug);
+                    Console.WriteLine($"[{_source.SourceName}] {slug} 中止の反映に失敗（次回リトライ）: {ex.Message}");
+                }
+
+                // 中止のレースが監視対象に残っていたら外す。
+                pending.RemoveAll(k => k.AsSlug() == slug);
             }
 
             var known = new HashSet<string>(pending.Select(k => k.AsSlug()));
@@ -219,6 +249,7 @@ namespace KeibaDataCollector.Services
             var result = GetOrCreate(raceKey);
             bool gotAnyRecord = false;
             bool isComplete = false;
+            bool isCancelled = false;
             var seenDataKubun = new SortedSet<string>();
 
             // Open成功後は、読み込みループの途中で例外が発生した場合でも必ずCloseが
@@ -239,6 +270,15 @@ namespace KeibaDataCollector.Services
                         throw new InvalidOperationException($"{_source.SourceName} Read failed: {size}");
 
                     var dataKubun = JvRecordParser.GetDataKubun(buffer);
+
+                    // 中止のレコードは、中身が初期値（着順0・タイム0:00.0）なので
+                    // 取り込んではいけない。読み捨てて、あとで中止として処理する。
+                    if (JvRecordParser.IsRaceCancelled(dataKubun))
+                    {
+                        isCancelled = true;
+                        seenDataKubun.Add(dataKubun);
+                        continue;
+                    }
 
                     switch (JvRecordParser.GetRecordTypeId(buffer))
                     {
@@ -277,6 +317,16 @@ namespace KeibaDataCollector.Services
             finally
             {
                 _source.Close();
+            }
+
+            // 中止が分かった時点で、そのレースは二度と結果が来ない（仕様書 p.38「４．払戻 提供なし」）。
+            // 公開済みの出走表・結果を中止として伏せ、監視も終える。
+            // ここでtrueを返さないと、来ない払戻を打ち切り時刻まで待ち続けることになる。
+            if (isCancelled)
+            {
+                if (await _wp.MarkRaceCancelledAsync(raceKey))
+                    Console.WriteLine($"[{_source.SourceName}] {raceKey.AsSlug()} 中止（データ区分9）のため非表示にしました");
+                return true;
             }
 
             // rc=0でもレコードが1件も無い場合は反映不要（無駄なWordPress更新を避ける）。

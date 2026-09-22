@@ -35,6 +35,30 @@ namespace KeibaDataCollector.Interop
             return rawRecord.Substring(2, 1);
         }
 
+        /// <summary>
+        /// そのレコードが「このレースは無かったことにしてほしい」という意味かどうか。
+        ///
+        /// JV-Data仕様書 p.11（2.レース詳細）・p.12（3.馬毎レース情報）の項番2 データ区分より:
+        ///   9 : レース中止
+        ///   0 : 該当レコード削除（提供ミスなどの理由による）
+        ///
+        /// 同仕様書 p.38「※開催中止時の運用について」に、開催中止当日は
+        /// レース詳細・馬毎レース情報がデータ区分=9で提供され、
+        /// 払戻は「提供なし」と明記されている。
+        ///
+        /// 実際に発生した障害（2026-09-21）:
+        ///   台風で中山競馬が翌日に順延されたが、この区分を見ていなかったため
+        ///   区分9のSEレコードをそのまま着順として取り込み、12レース分の「結果」を公開した。
+        ///   中止時の値は p.33「※レース中止、出走取消し等は初期値とします」のとおり初期値なので、
+        ///   着順0・タイム0:00.0・人気0という、走ってもいないレースの結果表が出ていた。
+        ///   払戻だけが空だったのは、仕様どおり提供されなかったため。
+        /// </summary>
+        public static bool IsRaceCancelled(string dataKubun) =>
+            dataKubun == DataKubunRaceCancelled || dataKubun == DataKubunRecordDeleted;
+
+        public const string DataKubunRaceCancelled = "9";
+        public const string DataKubunRecordDeleted = "0";
+
         /// <summary>"SE"レコード（馬毎レース情報）を朝一の出走表項目としてパースする。</summary>
         public static (RaceKey Key, RaceCardEntry Entry) ParseRaceCard(string rawRecord)
         {

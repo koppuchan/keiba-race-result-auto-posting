@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using KeibaDataCollector.Interop;
 using KeibaDataCollector.Models;
@@ -25,13 +26,33 @@ namespace KeibaDataCollector.Services
         /// "RA"レコード（レース詳細、1レース1件）を使うため "SE"（1頭1件）より効率的。
         /// </summary>
         public static List<RaceKey> ForDate(IRaceDataSource source, DateTime targetDate)
+            => Scan(source, targetDate).Active;
+
+        /// <summary>
+        /// 当日の対象レースと、中止になったレースの一覧。
+        ///
+        /// 中止のぶんだけ対象日で絞らないのは、中止が判明するのが開催の翌日以降になるため。
+        /// 仕様書 p.38「※開催中止時の運用について」に、中止当日の蓄積系データは
+        /// 出馬表のまま（区分2）で追加・訂正の提供が無く、区分9が入るのは
+        /// 「蓄積系データの成績登録日」だと明記されている。
+        ///
+        /// Open は option=2（今週データ）なので前日以前のレースも一緒に流れてくる。
+        /// そこから中止を拾えば、翌日のバッチが前日の中止を自動で片付けられる。
+        /// </summary>
+        public class RaceListing
+        {
+            public List<RaceKey> Active = new List<RaceKey>();
+            public List<RaceKey> Cancelled = new List<RaceKey>();
+        }
+
+        public static RaceListing Scan(IRaceDataSource source, DateTime targetDate)
         {
             var open = source.Open("RACE", EarlyAnchorFromTime, DataOption.ThisWeekAndToday);
             if (open.ReturnCode == -1)
             {
                 // 該当データ無し。開催が無い日など、異常ではない。
                 source.Close();
-                return new List<RaceKey>();
+                return new RaceListing();
             }
             if (open.ReturnCode < 0)
             {
@@ -40,7 +61,12 @@ namespace KeibaDataCollector.Services
                 throw new InvalidOperationException($"{source.SourceName} Open failed: {open.ReturnCode}");
             }
 
-            var keys = new List<RaceKey>();
+            // 同じレースのRAレコードは出馬表→速報成績→確定成績と何度も流れてくる。
+            // 後から来たものが新しいので、レースキーで上書きしながら最後の状態だけを残す。
+            // 中止になったレースは通常のレコードが流れたあとに区分9が来るため、
+            // 出現順に全部追加していくと中止を見落とす。
+            var latest = new Dictionary<string, RaceKey>();
+            var latestKubun = new Dictionary<string, string>();
             try
             {
                 while (true)
@@ -69,8 +95,19 @@ namespace KeibaDataCollector.Services
                         continue;
                     }
 
-                    if (raceKey.RaceDate.Date == targetDate.Date)
-                        keys.Add(raceKey);
+                    // 対象日のレースに加えて、中止になったレースは日付を問わず拾う。
+                    // 中止が蓄積系に反映されるのは開催の翌日以降のため、
+                    // 対象日だけを見ていると前日の中止を永久に取りこぼす。
+                    var kubun = JvRecordParser.GetDataKubun(buffer);
+                    if (raceKey.RaceDate.Date != targetDate.Date
+                        && !JvRecordParser.IsRaceCancelled(kubun))
+                    {
+                        continue;
+                    }
+
+                    var slug = raceKey.AsSlug();
+                    latest[slug] = raceKey;
+                    latestKubun[slug] = kubun;
                 }
             }
             finally
@@ -78,7 +115,27 @@ namespace KeibaDataCollector.Services
                 source.Close();
             }
 
-            return keys;
+            // 中止になったレースは、予想も結果監視も対象から外す。
+            var listing = new RaceListing();
+            foreach (var pair in latest)
+            {
+                if (JvRecordParser.IsRaceCancelled(latestKubun[pair.Key]))
+                    listing.Cancelled.Add(pair.Value);
+                else
+                    listing.Active.Add(pair.Value);
+            }
+
+            listing.Active.Sort((a, b) => string.CompareOrdinal(a.AsSlug(), b.AsSlug()));
+            listing.Cancelled.Sort((a, b) => string.CompareOrdinal(a.AsSlug(), b.AsSlug()));
+
+            if (listing.Cancelled.Count > 0)
+            {
+                Console.WriteLine(
+                    $"[{source.SourceName}] 中止: {listing.Cancelled.Count}件 " +
+                    $"({string.Join(", ", listing.Cancelled.Select(k => k.AsSlug()))})");
+            }
+
+            return listing;
         }
     }
 }

@@ -3,7 +3,7 @@
  * Plugin Name: Keiba Race Sync
  * Description: JV-Link/UmaConn連携の常駐アプリ（KeibaDataCollector）から送られる出走表・結果データを受け取り、
  *              カスタム投稿タイプ「race」として保存・表示する。
- * Version: 0.3.1
+ * Version: 0.4.0
  */
 
 if (!defined('ABSPATH')) {
@@ -13,10 +13,10 @@ if (!defined('ABSPATH')) {
 define('KEIBA_RACE_SYNC_JSON_META_KEYS', array('race_card', 'race_result', 'payouts', 'corner_passage'));
 
 // 稼働中のバージョン確認用（/wp-json/keiba-race-sync/v1/health で参照）。
-define('KEIBA_RACE_SYNC_VERSION', '0.3.1');
+define('KEIBA_RACE_SYNC_VERSION', '0.4.0');
 
 // CSS/JS のキャッシュ更新用。アセットを変更したらここを上げる。
-define('KEIBA_RACE_SYNC_ASSET_VER', '0.4.1');
+define('KEIBA_RACE_SYNC_ASSET_VER', '0.4.2');
 
 /**
  * カスタム投稿タイプ「race」を登録。
@@ -81,6 +81,24 @@ add_action('init', function () {
         'single' => true,
         'show_in_rest' => true,
         'default' => false,
+        'auth_callback' => function () {
+            return current_user_can('edit_posts');
+        },
+    ));
+
+    // 中止フラグ。収集アプリがJV-Dataのデータ区分9（レース中止）を受け取ったときに
+    // "cancelled" を書き込む。一覧・予想ページはこの印が付いたレースを出さない。
+    //
+    // 台風などで開催が順延されると当日の出走表は既に公開済みなので、
+    // 何もしないと走らないレースが残り続ける（2026-09-21の中山でご指摘をいただいた）。
+    // 順延先の開催は別の日付のレースキーで改めて流れてくるため、
+    // こちらを伏せるだけで前後とも正しくなる。
+    register_post_meta('race', 'race_status', array(
+        'type' => 'string',
+        'single' => true,
+        'show_in_rest' => true,
+        'default' => '',
+        'sanitize_callback' => 'sanitize_text_field',
         'auth_callback' => function () {
             return current_user_can('edit_posts');
         },
@@ -600,6 +618,13 @@ function keiba_race_sync_render_race($post_id)
         return keiba_race_sync_render_locked();
     }
 
+    // 中止のレースは一覧から外しているが、直接のリンクや
+    // キャッシュに残った古いボタンから開かれることがある。
+    // 出走表を出すと「まだ走る」と読めてしまうので、ここで打ち切る。
+    if (keiba_race_sync_is_race_cancelled($post_id)) {
+        return '<p class="keiba-cancelled">このレースは中止になりました。</p>';
+    }
+
     $race_card = keiba_race_sync_decode_meta($post_id, 'race_card');
     $race_result = keiba_race_sync_decode_meta($post_id, 'race_result');
     $payouts = keiba_race_sync_decode_meta($post_id, 'payouts');
@@ -994,6 +1019,13 @@ function keiba_race_sync_get_races_by_track($ymd)
             continue;
         }
 
+        // 中止になったレースは一覧に出さない。
+        // 開催がまるごと中止なら、その競馬場ごとSTEP1から消える（空の$tracksは作らない）。
+        // 一部のレースだけ中止なら、そのレースだけが抜ける。
+        if (keiba_race_sync_is_race_cancelled($post->ID)) {
+            continue;
+        }
+
         $code = $parsed['track'];
         if (!isset($tracks[$code])) {
             $tracks[$code] = array(
@@ -1020,6 +1052,17 @@ function keiba_race_sync_get_races_by_track($ymd)
     unset($track);
 
     return $tracks;
+}
+
+/**
+ * 中止になったレースか。
+ *
+ * 判定は収集アプリが書き込む race_status に任せる。
+ * 「払戻が無い」等の症状から推測すると、確定前のレースまで中止扱いにしてしまうため。
+ */
+function keiba_race_sync_is_race_cancelled($post_id)
+{
+    return get_post_meta($post_id, 'race_status', true) === 'cancelled';
 }
 
 function keiba_race_sync_has_result($post_id)
@@ -1111,9 +1154,15 @@ add_shortcode('keiba_race_selector', function ($atts) {
             // 鍵付きレースの内容がキャッシュ経由で漏れることはない。ここは目印に留める。
             $locked  = !keiba_race_sync_is_race_visible($race['race_key']);
             $classes = ($race['has_result'] ? ' is-finished' : '') . ($locked ? ' is-locked' : '');
-            $badge   = $locked
+
+            // 鍵が外れているレースに「無料」とは書かない。
+            // 外れている理由は「本日の無料公開レースだから」と「LINE登録済みだから」の
+            // 2通りあり、ここでは区別できない。登録済みの方には全レースが解放されるため、
+            // そのまま出すと全レースに「無料」が並んでしまう（お客様からご指摘をいただいた）。
+            // 無料で見られるレースは、鍵が付いていないことで分かる。
+            $badge = $locked
                 ? '<small>🔒</small>'
-                : ($race['has_result'] ? '<small>結果</small>' : '<small>無料</small>');
+                : ($race['has_result'] ? '<small>結果</small>' : '');
             printf(
                 '<button type="button" class="keiba-race-btn%s" data-race-key="%s">%dR%s</button>',
                 $classes,
