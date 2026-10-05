@@ -27,6 +27,10 @@ namespace KeibaDataCollector
             var deadline = DeadlineFor(mode);
             if (deadline.HasValue) ShutdownWatchdog.ArmDeadline(deadline.Value, mode);
 
+            // watch は1日中動くため、上の上限だけでは途中で止まったことに翌日まで気付けない。
+            // 進まなくなったら終了させ、タスクスケジューラの繰り返しで起動し直させる。
+            if (mode == "watch") ShutdownWatchdog.ArmStallDetector(WatchStallLimit, mode);
+
             try
             {
                 Run(mode, arg);
@@ -105,7 +109,26 @@ namespace KeibaDataCollector
 
                         using (var cts = new CancellationTokenSource())
                         {
-                            Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
+                            Console.CancelKeyPress += (_, e) =>
+                            {
+                                e.Cancel = true;
+
+                                // タスクスケジューラからの実行（出力をログへ流している）では無視する。
+                                //
+                                // 実際に発生（2026-10-03）: ログが14:18に "^C" で途切れ、そこで監視が止まった。
+                                // タスクは「ログオン時のみ実行」のため、VPSの画面に監視の黒いウィンドウが
+                                // 出ており、そこでのCtrl+C（文字のコピーのつもり等）で止まりうる。
+                                // 中央は9R以降、高知・ばんえいは全レースの結果が出ないまま終わった。
+                                // 手元で動かす run-watch.bat は出力を流していないので、従来どおり止められる。
+                                if (Console.IsOutputRedirected)
+                                {
+                                    Console.WriteLine(
+                                        "[watch] Ctrl+C を受け取りましたが、タスクからの実行のため無視して監視を続けます。" +
+                                        "止める場合は deploy.ps1 を使ってください。");
+                                    return;
+                                }
+                                cts.Cancel();
+                            };
 
                             // ソースごとに独立してtry/catchし、片方の失敗がもう片方の監視を止めない
                             // ようにする。
@@ -249,6 +272,16 @@ namespace KeibaDataCollector
         // 監視が例外で落ちたときの再開待ち時間。
         private static readonly TimeSpan WatchRetryDelay = TimeSpan.FromMinutes(3);
 
+        // watch がこれだけ進まなければ、止まったものとして終了させる。
+        //
+        // 固まっていなくても進捗が途切れる最長は、1レースの反映中にWordPressが
+        // 一時的な不調（503等）を返し続ける場合。照会1回（HttpClientの既定タイムアウト100秒）と
+        // 送信5回（各100秒）＋再試行の待ち（計52秒）で約11分になる。
+        // レース一覧の取得は数分かかるが、読めている間は進捗を記録している。
+        // 止まっていない実行を切ると、起動し直すたびに同じことが起きて
+        // かえって反映が遅れるため、その倍近い余裕を取る。
+        private static readonly TimeSpan WatchStallLimit = TimeSpan.FromMinutes(20);
+
         /// <summary>
         /// 1つのデータ源の監視を、その日の打ち切り時刻まで動かし続ける。
         ///
@@ -260,11 +293,29 @@ namespace KeibaDataCollector
         private static async System.Threading.Tasks.Task RunWatchFor(
             JvSpecComDataSource source, WordPress.WordPressClient wp, CancellationToken ct)
         {
+            try
+            {
+                await RunWatchUntilCutoff(source, wp, ct);
+            }
+            finally
+            {
+                // 監視を終えたあとに「止まった」と判定されないようにする。
+                ShutdownWatchdog.StopTracking(source.SourceName);
+            }
+        }
+
+        private static async System.Threading.Tasks.Task RunWatchUntilCutoff(
+            JvSpecComDataSource source, WordPress.WordPressClient wp, CancellationToken ct)
+        {
             var attempt = 0;
 
             while (!ct.IsCancellationRequested)
             {
                 attempt++;
+                // 失敗して再開を待っている間も「止まっている」わけではない。
+                // ここで記録しないと、片方のデータ源が認証エラー等で失敗し続けているだけで
+                // プロセスごと終了させてしまい、正常なもう片方の監視まで巻き込む。
+                ShutdownWatchdog.ReportProgress(source.SourceName);
                 try
                 {
                     source.Initialize(AppConfig.JvLinkSoftwareId);

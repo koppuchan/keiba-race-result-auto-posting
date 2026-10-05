@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Threading;
 
@@ -63,6 +64,83 @@ namespace KeibaDataCollector
             {
                 IsBackground = true,
                 Name = "shutdown-deadline",
+            };
+            thread.Start();
+        }
+
+        // データ源ごとの、最後に処理が進んだ時刻（Stopwatchのタイムスタンプ）。
+        // 時計の変更（時刻同期など）で誤判定しないよう、壁時計ではなく経過時間で測る。
+        private static readonly ConcurrentDictionary<string, long> LastProgress =
+            new ConcurrentDictionary<string, long>();
+
+        /// <summary>止まっていないかを確かめる間隔。</summary>
+        private static readonly TimeSpan StallCheckInterval = TimeSpan.FromSeconds(30);
+
+        /// <summary>処理が進んだことを記録する。watch の監視ループとデータ読み込みから呼ぶ。</summary>
+        public static void ReportProgress(string sourceName)
+        {
+            LastProgress[sourceName] = Stopwatch.GetTimestamp();
+        }
+
+        /// <summary>
+        /// 監視を終えたデータ源を対象から外す。
+        /// 打ち切り時刻まで動ききったものを「止まった」と誤認しないため。
+        /// </summary>
+        public static void StopTracking(string sourceName)
+        {
+            LastProgress.TryRemove(sourceName, out _);
+        }
+
+        /// <summary>
+        /// watch の監視が途中で止まったら、プロセスを終了させる。
+        /// 終了すればタスクスケジューラが次の繰り返しで起動し直し、
+        /// 起動時に確定済みのレースをまとめて反映する（取りこぼしは同日中なら追いつく）。
+        ///
+        /// 実際に発生した障害（2026-10-05）:
+        ///   14時前後（サイト側の最終更新記録は13:58）から結果の書き込みが止まり、
+        ///   盛岡は1〜4R、金沢は1〜2Rまでで、大井は1件も結果が出ないまま夜を迎えた。
+        ///   お客様から「終了しているレースが多々あるのに、一部しか結果が表示されない」と
+        ///   ご指摘をいただいた。watch は1日1回（09:30）しか起動しないため、
+        ///   一度止まると誰も再開しなかった。
+        ///
+        /// 異常終了なら次の繰り返しで起動し直せるが、固まった（COMの呼び出しが返らない等）
+        /// 場合はプロセスが残り続け、多重起動禁止のため起動し直しも弾かれる。
+        /// ArmDeadline（25時間）では遅すぎる。watch は1日中動くのが正常なので、
+        /// 時間の長さではなく「進んでいるかどうか」で判断する。
+        /// データ源ごとに見るのは、地方だけの平日のように片方が空回りしているあいだに
+        /// もう片方だけ止まった場合も見逃さないため。
+        /// </summary>
+        public static void ArmStallDetector(TimeSpan limit, string mode)
+        {
+            var thread = new Thread(() =>
+            {
+                while (true)
+                {
+                    Thread.Sleep(StallCheckInterval);
+
+                    var now = Stopwatch.GetTimestamp();
+                    foreach (var pair in LastProgress)
+                    {
+                        var idle = TimeSpan.FromSeconds((now - pair.Value) / (double) Stopwatch.Frequency);
+                        if (idle < limit) continue;
+
+                        Console.WriteLine(
+                            $"[watchdog] {pair.Key} の{mode}が{idle.TotalMinutes:0}分間進んでいません。" +
+                            "プロセスを終了します（タスクスケジューラが起動し直し、" +
+                            "確定済みのレースはその時点でまとめて反映されます）。");
+                        Console.Out.Flush();
+
+                        // 作業が途中なので成功扱いにはしない。
+                        new Thread(() => Environment.Exit(1)) { IsBackground = true }.Start();
+                        Thread.Sleep(HardKillAfter);
+                        Process.GetCurrentProcess().Kill();
+                        return;
+                    }
+                }
+            })
+            {
+                IsBackground = true,
+                Name = "stall-detector",
             };
             thread.Start();
         }

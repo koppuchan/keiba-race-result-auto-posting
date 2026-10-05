@@ -82,6 +82,11 @@ namespace KeibaDataCollector.Services
                     if (size < 0)
                         throw new InvalidOperationException($"{source.SourceName} Read failed: {size}");
 
+                    // 今週分を丸ごと読むため数分かかる。読めている間は止まっていないことを
+                    // watch の停止検知（ShutdownWatchdog）に伝える。-3（ダウンロード中）が
+                    // 続くだけの間は記録しないので、そこで固まった場合は検知できる。
+                    ShutdownWatchdog.ReportProgress(source.SourceName);
+
                     if (JvRecordParser.GetRecordTypeId(buffer) != "RA") continue;
 
                     RaceKey raceKey;

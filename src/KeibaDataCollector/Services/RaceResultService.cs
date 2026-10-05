@@ -30,6 +30,14 @@ namespace KeibaDataCollector.Services
         // このレースの最新状態でWordPressへ再送する（Eventually Consistentな即時反映）。
         private readonly Dictionary<string, RaceResult> _buffers = new Dictionary<string, RaceResult>();
 
+        // 前回の「監視中...」以降に 0B12 を照会した結果の内訳。
+        // 未確定のレースはログに何も出さないため、これが無いと
+        // 「まだ結果が無い」のか「照会がずっとデータ無しを返している」のか区別できない
+        // （2026-10-05: プロセスは動いていたが、地方39件が14時以降1件も確定しなかった）。
+        private int _realtimeNoData;
+        private int _realtimeEmpty;
+        private int _realtimeWithData;
+
         // 中止を反映済みのレース。一覧は一定間隔で取り直すため、
         // これが無いと同じ中止レースに毎回WordPressへ書きに行ってしまう。
         private readonly HashSet<string> _cancelledNotified = new HashSet<string>();
@@ -70,12 +78,26 @@ namespace KeibaDataCollector.Services
 
             while (!ct.IsCancellationRequested && DateTime.Now < cutoff)
             {
+                // このループが回らなくなったら、プロセスごと起動し直させる（ShutdownWatchdog）。
+                ShutdownWatchdog.ReportProgress(_source.SourceName);
+
                 // 起動直後と、以降は一定間隔でレース一覧を取り直す。
                 // 開催途中で追加されたレースや、起動が早すぎた場合も拾える。
                 if (DateTime.Now - lastDiscovery >= RediscoverInterval)
                 {
-                    lastDiscovery = DateTime.Now;
                     MergeDiscoveredRaces(targetDate, pending, completed);
+                    // 間隔は取得が「終わってから」数える。
+                    //
+                    // 始めた時刻で数えていたため、取得が間隔（10分）より長くかかると
+                    // 終わった時点で次の取得が来ており、取得だけを繰り返していた。
+                    // 各レースの確認は取得と取得の合間に1回ずつしか行われず、
+                    // それも大量の読み込みを閉じた直後に限られる。
+                    // 実際に発生（2026-09-29, 2026-10-05）: 地方の取得が1回13〜18分かかり、
+                    // プロセスは動き続けていたのに、地方の結果が 9/29 は58件、
+                    // 10/05 は14時以降39件、確定しないままだった。
+                    // それが確定しなかった直接の原因かは未確認（「監視中...」行の
+                    // 0B12照会の内訳で確かめる）。いずれにせよ確認の間隔は確保する。
+                    lastDiscovery = DateTime.Now;
                 }
 
                 for (int i = pending.Count - 1; i >= 0; i--)
@@ -94,6 +116,8 @@ namespace KeibaDataCollector.Services
                         Console.WriteLine($"[{_source.SourceName}] {raceKey.AsSlug()} 監視中にエラー（次回リトライ）: {ex.Message}");
                         confirmed = false;
                     }
+                    // 監視対象が多い日は1周に時間がかかるため、1レースごとに記録する。
+                    ShutdownWatchdog.ReportProgress(_source.SourceName);
 
                     if (confirmed)
                     {
@@ -119,7 +143,9 @@ namespace KeibaDataCollector.Services
                     var workingSetMb = Environment.WorkingSet / 1024d / 1024d;
                     Console.WriteLine(
                         $"[{_source.SourceName}] 監視中... 未確定{pending.Count}件 / 確定済み{completed.Count}件 " +
-                        $"（{DateTime.Now:HH:mm:ss}時点、メモリ{workingSetMb:0}MB）。");
+                        $"（{DateTime.Now:HH:mm:ss}時点、メモリ{workingSetMb:0}MB）。" +
+                        $" 0B12照会: データ無し{_realtimeNoData} / 空{_realtimeEmpty} / あり{_realtimeWithData}");
+                    _realtimeNoData = _realtimeEmpty = _realtimeWithData = 0;
                     lastHeartbeat = DateTime.Now;
                 }
 
@@ -146,6 +172,7 @@ namespace KeibaDataCollector.Services
         /// 取得に失敗しても、既に監視中のレースは止めない。</summary>
         private void MergeDiscoveredRaces(DateTime targetDate, List<RaceKey> pending, HashSet<string> completed)
         {
+            var started = DateTime.Now;
             RaceDiscovery.RaceListing listing;
             try
             {
@@ -181,6 +208,9 @@ namespace KeibaDataCollector.Services
 
                 // 中止のレースが監視対象に残っていたら外す。
                 pending.RemoveAll(k => k.AsSlug() == slug);
+
+                // 開催ごと中止の日は件数が多く、WordPressの応答が遅いと時間がかかるため。
+                ShutdownWatchdog.ReportProgress(_source.SourceName);
             }
 
             var known = new HashSet<string>(pending.Select(k => k.AsSlug()));
@@ -201,7 +231,10 @@ namespace KeibaDataCollector.Services
             Console.WriteLine(
                 $"[{_source.SourceName}] {targetDate:yyyy-MM-dd} レース一覧を取得: {discovered.Count}件" +
                 (added > 0 ? $"（うち{added}件を監視対象に追加）" : "（追加なし）") +
-                $" 未確定{pending.Count}件 / 確定済み{completed.Count}件");
+                $" 未確定{pending.Count}件 / 確定済み{completed.Count}件" +
+                // 所要時間も出す。取得の間は各レースの確認が止まるため、
+                // ここが長いと結果の反映がその分だけ遅れる（2026-10-05 は1回18分）。
+                $"（所要 {(DateTime.Now - started).TotalMinutes:0.0}分）");
         }
 
         /// <summary>
@@ -230,6 +263,7 @@ namespace KeibaDataCollector.Services
             int rc = _source.OpenRealtime("0B12", raceKey.AsJvRealtimeKey());
             if (rc == -1)
             {
+                _realtimeNoData++;
                 // JV-Linkインターフェース仕様書のコード表より: -1は「該当データ無し」＝まだ未確定。
                 // ただし同仕様書に「-1の場合もJVCloseを呼び出して取り込み処理を終了してください」と
                 // 明記されている。実機で確認: ここでCloseを呼ばずにreturnすると、次回以降の
@@ -318,6 +352,9 @@ namespace KeibaDataCollector.Services
             {
                 _source.Close();
             }
+
+            if (gotAnyRecord || isCancelled) _realtimeWithData++;
+            else _realtimeEmpty++;
 
             // 中止が分かった時点で、そのレースは二度と結果が来ない（仕様書 p.38「４．払戻 提供なし」）。
             // 公開済みの出走表・結果を中止として伏せ、監視も終える。

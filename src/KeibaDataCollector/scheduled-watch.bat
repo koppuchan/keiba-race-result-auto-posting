@@ -3,11 +3,13 @@ chcp 65001 >nul
 REM ============================================================================
 REM Task Scheduler entry point for watch mode (results / payouts).
 REM
-REM watch mode exits on its own once every race of the day has reached the
-REM confirmed stage, so the task simply finishes when the day's racing is over -
-REM there is no need for a stop trigger. Configure the Task Scheduler setting
-REM "If the task is already running, do not start a new instance" so an overlap
-REM cannot open the same COM object twice.
+REM watch mode runs until the daily cutoff (23:30) and then exits on its own,
+REM so there is no need for a stop trigger. The task is triggered every 10
+REM minutes until the cutoff, with "If the task is already running, do not
+REM start a new instance": while watch is running the trigger is ignored, and
+REM if watch has crashed or was ended by its stall detector, the next trigger
+REM starts it again. Each run appends a "watch start" line below, so more
+REM than one per day in the log means watch was restarted.
 REM
 REM Differences from run-watch.bat (interactive): no "pause" - a scheduled task
 REM that waits for a key press never finishes - and output is appended to a
