@@ -9,7 +9,8 @@
       KeibaDataCollector-Predict : 毎日 -PredictTime に scheduled-predict.bat
       KeibaDataCollector-Watch   : 毎日 -WatchTime   に scheduled-watch.bat
 
-    watch モードは当日の全レースが確定すると自身で終了するため、停止トリガーは不要です。
+    watch モードは監視の打ち切り時刻（23:30）まで動き続けます。-WatchTime から23:30まで
+    10分ごとに起動を試み、止まっていた場合だけ起動し直します（動いている間は弾かれます）。
 
     重要な前提:
       JV-Link / UmaConn の利用キーは「setup を実行したWindowsユーザー」の
@@ -166,8 +167,16 @@ Register-KeibaTask -TaskName 'KeibaDataCollector-Predict' -BatPath $predictBat -
     -Description '朝一オッズの人気順から予想印を生成しWordPressへ反映する（オッズ配信を待って繰り返す）' `
     -RepeatEvery (New-TimeSpan -Minutes 15) -RepeatFor (New-TimeSpan -Hours 12)
 
+# watch も繰り返し起動する。動いている間は多重起動禁止（IgnoreNew）で弾かれるだけなので、
+# 実際に起動されるのは、異常終了したときや停止検知（ShutdownWatchdog）で終了したときだけ。
+#
+# 1日1回だけの起動だと、途中で止まった時点でその日の残りが全部反映されなくなる
+# （実際に発生 2026-10-05: 14時前後から結果が止まり、お客様のご指摘で発覚）。
+# 起動し直せば確定済みのレースはその場でまとめて反映される。
+# 監視の打ち切り（RaceResultService.DailyCutoff = 23:30）に合わせて14時間とする。
 Register-KeibaTask -TaskName 'KeibaDataCollector-Watch' -BatPath $watchBat -StartTime $WatchTime `
-    -Description 'レース確定を監視し、結果・払戻をWordPressへ随時反映する。全レース確定で自動終了する'
+    -Description 'レース確定を監視し、結果・払戻をWordPressへ随時反映する。止まっていれば起動し直す' `
+    -RepeatEvery (New-TimeSpan -Minutes 10) -RepeatFor (New-TimeSpan -Hours 14)
 
 # 登録し直したことで停止したタスクを再開する。
 # ここを忘れると、日中に更新した日はその後のレースが反映されないまま終わる。

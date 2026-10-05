@@ -70,6 +70,9 @@ namespace KeibaDataCollector.Services
 
             while (!ct.IsCancellationRequested && DateTime.Now < cutoff)
             {
+                // このループが回らなくなったら、プロセスごと起動し直させる（ShutdownWatchdog）。
+                ShutdownWatchdog.ReportProgress(_source.SourceName);
+
                 // 起動直後と、以降は一定間隔でレース一覧を取り直す。
                 // 開催途中で追加されたレースや、起動が早すぎた場合も拾える。
                 if (DateTime.Now - lastDiscovery >= RediscoverInterval)
@@ -94,6 +97,8 @@ namespace KeibaDataCollector.Services
                         Console.WriteLine($"[{_source.SourceName}] {raceKey.AsSlug()} 監視中にエラー（次回リトライ）: {ex.Message}");
                         confirmed = false;
                     }
+                    // 監視対象が多い日は1周に時間がかかるため、1レースごとに記録する。
+                    ShutdownWatchdog.ReportProgress(_source.SourceName);
 
                     if (confirmed)
                     {
@@ -181,6 +186,9 @@ namespace KeibaDataCollector.Services
 
                 // 中止のレースが監視対象に残っていたら外す。
                 pending.RemoveAll(k => k.AsSlug() == slug);
+
+                // 開催ごと中止の日は件数が多く、WordPressの応答が遅いと時間がかかるため。
+                ShutdownWatchdog.ReportProgress(_source.SourceName);
             }
 
             var known = new HashSet<string>(pending.Select(k => k.AsSlug()));
