@@ -109,7 +109,26 @@ namespace KeibaDataCollector
 
                         using (var cts = new CancellationTokenSource())
                         {
-                            Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
+                            Console.CancelKeyPress += (_, e) =>
+                            {
+                                e.Cancel = true;
+
+                                // タスクスケジューラからの実行（出力をログへ流している）では無視する。
+                                //
+                                // 実際に発生（2026-10-03）: ログが14:18に "^C" で途切れ、そこで監視が止まった。
+                                // タスクは「ログオン時のみ実行」のため、VPSの画面に監視の黒いウィンドウが
+                                // 出ており、そこでのCtrl+C（文字のコピーのつもり等）で止まりうる。
+                                // 中央は9R以降、高知・ばんえいは全レースの結果が出ないまま終わった。
+                                // 手元で動かす run-watch.bat は出力を流していないので、従来どおり止められる。
+                                if (Console.IsOutputRedirected)
+                                {
+                                    Console.WriteLine(
+                                        "[watch] Ctrl+C を受け取りましたが、タスクからの実行のため無視して監視を続けます。" +
+                                        "止める場合は deploy.ps1 を使ってください。");
+                                    return;
+                                }
+                                cts.Cancel();
+                            };
 
                             // ソースごとに独立してtry/catchし、片方の失敗がもう片方の監視を止めない
                             // ようにする。
