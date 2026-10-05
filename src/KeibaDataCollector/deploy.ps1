@@ -42,6 +42,21 @@ Set-Location $scriptDir
 $RunningTasks = @('KeibaDataCollector-Watch', 'KeibaDataCollector-Predict')
 $AllTasks     = @('KeibaDataCollector-Morning') + $RunningTasks
 
+# 止める対象は、このリポジトリでビルドしたexeだけにする。
+#
+# 同じVPSで horse-race-custom-builder も同じ名前の KeibaDataCollector.exe を動かしている
+# （C:\horse-race-custom-builder\collector\... の score / backfill）。名前だけで探すと
+# 先方のプロセスまで止めてしまい、先方が固まっていると終了できずにこちらのデプロイが
+# ビルド前に中断する（2026-10-05 発生: 先方の score が15:00から固まっており、
+# 結果の監視を再開できなかった）。
+$OurExe = Join-Path $scriptDir 'bin\Debug\net48\KeibaDataCollector.exe'
+
+function Get-OurProcesses {
+    Get-CimInstance Win32_Process -Filter "Name='KeibaDataCollector.exe'" |
+        Where-Object { $_.ExecutablePath -eq $OurExe } |
+        ForEach-Object { Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue }
+}
+
 function Write-Step([string] $message) {
     Write-Output ""
     Write-Output "==== $message ===="
@@ -57,32 +72,50 @@ foreach ($task in $AllTasks) {
 }
 
 # タスクを止めても子プロセスが残る。残っているとexeを上書きできない。
-$procs = Get-Process KeibaDataCollector -ErrorAction SilentlyContinue
+# 他システムの同名プロセスは触らないが、あることは表示しておく（切り分けの手がかりになる）。
+foreach ($other in (Get-CimInstance Win32_Process -Filter "Name='KeibaDataCollector.exe'" |
+                    Where-Object { $_.ExecutablePath -ne $OurExe })) {
+    Write-Output ("  他システムのプロセス（停止しません）: PID {0}  起動 {1}  {2}" -f
+        $other.ProcessId, $other.CreationDate, $other.CommandLine)
+}
+
+$procs = Get-OurProcesses
 if ($procs) {
     Write-Output ("  残存プロセスを終了: PID {0}" -f (($procs | ForEach-Object { $_.Id }) -join ', '))
     $procs | Stop-Process -Force -ErrorAction SilentlyContinue
 
     # Stop-Process で落ちないことがある。子プロセスごと落とす taskkill も試す。
     Start-Sleep -Seconds 1
-    foreach ($p in (Get-Process KeibaDataCollector -ErrorAction SilentlyContinue)) {
-        & taskkill.exe /F /T /PID $p.Id 2>&1 | Out-Null
+    foreach ($p in (Get-OurProcesses)) {
+        # 標準エラーは cmd の中でまとめてから受け取る。PowerShell 側で 2>&1 にすると、
+        # Windows PowerShell 5.1 では taskkill のエラー出力が ErrorActionPreference=Stop により
+        # 例外になり、スクリプトごと中断する（2026-10-05 発生: 停止だけして、
+        # ビルドも再開もしないまま終わった）。失敗しても続け、理由はそのまま表示する。
+        $result = cmd /c "taskkill /F /T /PID $($p.Id) 2>&1"
+        if ($LASTEXITCODE -ne 0) {
+            Write-Output ("  taskkill PID {0} 失敗: {1}" -f $p.Id, (($result | Out-String).Trim() -replace '\s+', ' '))
+        }
     }
 
     for ($i = 0; $i -lt 40; $i++) {          # ロックが解けるまで最大10秒待つ
         Start-Sleep -Milliseconds 250
-        if (-not (Get-Process KeibaDataCollector -ErrorAction SilentlyContinue)) { break }
+        if (-not (Get-OurProcesses)) { break }
     }
 }
 
-$stuck = Get-Process KeibaDataCollector -ErrorAction SilentlyContinue
+$stuck = Get-OurProcesses
 if ($stuck) {
     # どれがいつから残っているのか分からないと、原因の切り分けも復旧もできない。
     Write-Output ""
     Write-Output "  終了できないプロセス:"
     foreach ($p in $stuck) {
         $since = try { $p.StartTime.ToString('MM/dd HH:mm') } catch { '不明' }
-        Write-Output ("    PID {0}  起動 {1}  応答 {2}" -f $p.Id, $since,
-            $(if ($p.Responding) { 'あり' } else { 'なし' }))
+        # どのモード（watch / predict 等）が固まっているのかで原因の当たりが変わるため、引数も出す。
+        $mode = try {
+            (Get-CimInstance Win32_Process -Filter "ProcessId=$($p.Id)").CommandLine -replace '^.*KeibaDataCollector\.exe"?\s*', ''
+        } catch { '不明' }
+        Write-Output ("    PID {0}  起動 {1}  応答 {2}  モード {3}" -f $p.Id, $since,
+            $(if ($p.Responding) { 'あり' } else { 'なし' }), $mode)
     }
     Write-Output ""
     throw @"
