@@ -218,6 +218,50 @@ namespace KeibaDataCollector.WordPress
             return true;
         }
 
+        /// <summary>
+        /// 指定日のレースのうち、結果か払戻が欠けているもの（中止を除く）を返す。catchup 用。
+        ///
+        /// 投稿の公開日で絞り込む。投稿は開催当日の朝一バッチで作られるため、
+        /// 公開日と開催日は一致する。念のため race_key の日付でも確かめる。
+        /// </summary>
+        public async Task<List<RaceKey>> FindRacesMissingResultsAsync(DateTime date)
+        {
+            var missing = new List<RaceKey>();
+            var prefix = date.ToString("yyyyMMdd") + "-";
+
+            // 1日分は中央と地方を合わせて100件を超えることがあるため、ページを送って全部読む。
+            for (int page = 1; ; page++)
+            {
+                var url = $"{_baseUrl}/wp-json/wp/v2/race?per_page=100&page={page}" +
+                          $"&after={date:yyyy-MM-dd}T00:00:00&before={date:yyyy-MM-dd}T23:59:59";
+                var response = await _http.GetAsync(url);
+
+                // 最終ページの次を要求すると 400（rest_post_invalid_page_number）が返る。
+                if (page > 1 && response.StatusCode == HttpStatusCode.BadRequest) break;
+                if (!response.IsSuccessStatusCode)
+                    throw new InvalidOperationException($"WordPress API failed ({response.StatusCode}): {url}");
+
+                var posts = JsonConvert.DeserializeObject<WpPost[]>(await response.Content.ReadAsStringAsync())
+                            ?? new WpPost[0];
+
+                foreach (var post in posts)
+                {
+                    var meta = post.Meta;
+                    if (meta?.RaceKey == null || !meta.RaceKey.StartsWith(prefix)) continue;
+                    if (meta.RaceStatus == "cancelled") continue;
+                    if (HasContent(meta.RaceResult) && HasContent(meta.Payouts)) continue;
+
+                    var key = RaceKey.TryParseSlug(meta.RaceKey);
+                    if (key != null) missing.Add(key);
+                }
+
+                if (posts.Length < 100) break;
+            }
+
+            missing.Sort((a, b) => string.CompareOrdinal(a.AsSlug(), b.AsSlug()));
+            return missing;
+        }
+
         /// <summary>race_key が一致する既存投稿を探す。無ければ null。</summary>
         private async Task<ExistingRacePost> FindPostByRaceKeyAsync(string raceKeySlug)
         {
@@ -360,8 +404,17 @@ namespace KeibaDataCollector.WordPress
 
         private class WpPostMeta
         {
+            [JsonProperty("race_key")]
+            public string RaceKey { get; set; }
+
             [JsonProperty("race_result")]
             public string RaceResult { get; set; }
+
+            [JsonProperty("payouts")]
+            public string Payouts { get; set; }
+
+            [JsonProperty("race_status")]
+            public string RaceStatus { get; set; }
 
             [JsonProperty("predictions")]
             public string Predictions { get; set; }

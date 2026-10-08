@@ -66,6 +66,64 @@ namespace KeibaDataCollector.Services
         // 中断からの再開判定にも使うため公開する。
         public static readonly TimeSpan DailyCutoff = TimeSpan.FromHours(23.5);
 
+        public class CatchUpSummary
+        {
+            public int Confirmed;
+            public int Partial;
+            public int NoData;
+            public int Failed;
+        }
+
+        /// <summary>
+        /// 過去の日付で、結果か払戻が欠けたまま残ったレースを1回ずつ取り直す（catchup モード）。
+        ///
+        /// watch は当日のレースしか見ないため、提供元の配信が遅れたり監視が止まったりして
+        /// 日付が変わると、取りこぼしを拾う手段が無かった
+        /// （2026-10-05: 地方39件、10-06: 15件、10-07: 2件が欠けたまま残った）。
+        /// 0B12 の提供期間は1週間なので、その間なら取り直せる。
+        /// </summary>
+        public async Task<CatchUpSummary> CatchUpAsync(IReadOnlyList<RaceKey> races)
+        {
+            var summary = new CatchUpSummary();
+
+            foreach (var raceKey in races)
+            {
+                var withDataBefore = _realtimeWithData;
+                try
+                {
+                    if (await CheckAndPublishRaceAsync(raceKey))
+                    {
+                        summary.Confirmed++;
+                        Console.WriteLine($"[{_source.SourceName}] {raceKey.AsSlug()} 確定（着順・払戻とも反映）");
+                        continue;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    summary.Failed++;
+                    Console.WriteLine($"[{_source.SourceName}] {raceKey.AsSlug()} 取得に失敗: {ex.Message}");
+                    continue;
+                }
+
+                if (_realtimeWithData > withDataBefore)
+                {
+                    // 届いた分は反映済み。全着順か払戻のどちらかがまだ提供されていない。
+                    summary.Partial++;
+                    Console.WriteLine($"[{_source.SourceName}] {raceKey.AsSlug()} 一部のみ（全着順か払戻が未提供）");
+                }
+                else
+                {
+                    summary.NoData++;
+                    Console.WriteLine($"[{_source.SourceName}] {raceKey.AsSlug()} 提供元にデータ無し");
+                }
+            }
+
+            Console.WriteLine(
+                $"[{_source.SourceName}] 取り直し完了: 対象{races.Count}件 / 確定{summary.Confirmed}件 / " +
+                $"一部のみ{summary.Partial}件 / データ無し{summary.NoData}件 / 失敗{summary.Failed}件");
+            return summary;
+        }
+
         public async Task RunWatchLoopAsync(DateTime targetDate, CancellationToken ct)
         {
             // 確定済みのレースキー。取り直しのたびに再登録されるのを防ぐ。

@@ -15,6 +15,22 @@ namespace KeibaDataCollector.Models
         /// <summary>JVRTOpenのkey引数（レース単位）形式。JV-Linkインターフェース仕様書の
         /// 対応表（払戻確定等のイベントが返すキー）に合わせた"YYYYMMDDJJRR"形式。</summary>
         public string AsJvRealtimeKey() => $"{RaceDate:yyyyMMdd}{TrackCode}{RaceNumber:D2}";
+
+        /// <summary>AsSlug() の形式（例: 20261005-35-5R）から戻す。形式が違えば null。</summary>
+        public static RaceKey TryParseSlug(string slug)
+        {
+            var m = System.Text.RegularExpressions.Regex.Match(
+                (slug ?? "").Trim(), @"^(\d{8})-(\w+)-(\d+)R$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            if (!m.Success) return null;
+            if (!DateTime.TryParseExact(m.Groups[1].Value, "yyyyMMdd", null,
+                    System.Globalization.DateTimeStyles.None, out var date)) return null;
+            return new RaceKey
+            {
+                RaceDate = date,
+                TrackCode = m.Groups[2].Value,
+                RaceNumber = int.Parse(m.Groups[3].Value),
+            };
+        }
     }
 
     /// <summary>朝一取得する出走表（番組表）1頭分。画像の出馬表相当。</summary>

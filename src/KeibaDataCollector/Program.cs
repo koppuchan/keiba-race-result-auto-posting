@@ -18,8 +18,6 @@ namespace KeibaDataCollector
         private static int Main(string[] args)
         {
             var mode = args.Length > 0 ? args[0] : "help";
-            // probe のみ第2引数でレースキーを受け取る（例: probe 20260811-46-1R）。
-            var arg = args.Length > 1 ? args[1] : null;
 
             // 作業中に固まってもプロセスが残らないようにする。
             // setupは利用キー入力のダイアログを人が操作する用途なので対象外。
@@ -33,7 +31,7 @@ namespace KeibaDataCollector
 
             try
             {
-                Run(mode, arg);
+                Run(mode, args);
             }
             catch (Exception ex)
             {
@@ -70,14 +68,20 @@ namespace KeibaDataCollector
                     return TimeSpan.FromHours(3);
                 case "watch":
                     return TimeSpan.FromHours(25);
+                case "catchup":
+                    // 1レースあたり数秒。数日分でも数分で終わるので、1時間あれば十分。
+                    return TimeSpan.FromHours(1);
                 default:
                     // setup（ダイアログ待ち）・probe（手動調査）・help は打ち切らない。
                     return null;
             }
         }
 
-        private static void Run(string mode, string arg = null)
+        private static void Run(string mode, string[] args)
         {
+            // probe は第2引数でレースキーを受け取る（例: probe 20260811-46-1R）。
+            var arg = args.Length > 1 ? args[1] : null;
+
             // WordPressClient はここでは作らない: setup モードはWordPressに一切繋がないため、
             // WordPressUser/WordPressAppPassword 未設定でも setup だけは実行できるようにする。
             using (var jvLink = new JvSpecComDataSource(AppConfig.JvLinkProgId, "JV", "JV-Link(中央競馬)"))
@@ -167,6 +171,23 @@ namespace KeibaDataCollector
                         break;
                     }
 
+                    case "catchup":
+                    {
+                        // 過去の日付で、結果か払戻が欠けたまま残ったレースを取り直す。
+                        // watch は当日しか見ないため、日付が変わると取りこぼしを拾う手段が無かった。
+                        var dates = ParseCatchUpDates(args);
+                        if (dates == null) break;
+
+                        var wp = new WordPressClient(
+                            AppConfig.WordPressBaseUrl,
+                            AppConfig.WordPressUser,
+                            AppConfig.WordPressAppPassword);
+
+                        foreach (var date in dates)
+                            RunCatchUpForDate(jvLink, umaConn, wp, date);
+                        break;
+                    }
+
                     case "probe":
                         // 調査用。どのデータ種別で何が取得できるかを実際に叩いて確認する
                         // （地方競馬でオッズ・人気が別種別で提供されていないかの確認用）。
@@ -184,11 +205,13 @@ namespace KeibaDataCollector
                         break;
 
                     default:
-                        Console.WriteLine("使い方: KeibaDataCollector.exe [setup|morning|predict|watch|probe]");
+                        Console.WriteLine("使い方: KeibaDataCollector.exe [setup|morning|predict|watch|catchup|probe]");
                         Console.WriteLine("  setup   : 初回のみ。利用キー等をGUIダイアログで設定する。");
                         Console.WriteLine("  morning : 朝一バッチ。当日の出走表を取得しWordPressへ反映する。");
                         Console.WriteLine("  predict : 朝一オッズの人気順から予想印を生成しWordPressへ反映する。");
                         Console.WriteLine("  watch   : レース確定を監視し、結果・払戻を随時WordPressへ反映する。");
+                        Console.WriteLine("  catchup : 指定日の、結果か払戻が欠けているレースを取り直して反映する。");
+                        Console.WriteLine("            例: catchup 2026-10-05 2026-10-06（速報の提供期間は1週間）");
                         Console.WriteLine("  probe   : 調査用。どのデータ種別で何が取得できるか確認する（WordPressへは書き込まない）。");
                         Console.WriteLine("            レースを指定する場合: probe 20260811-46-1R");
                         break;
@@ -266,6 +289,89 @@ namespace KeibaDataCollector
                 // 片方のソースが失敗しても、もう片方は動かす。ただし失敗は終了コードに残す。
                 // 予想が出ないことに気付けないと、お客様からの指摘で初めて分かることになる。
                 LogFailure(source.SourceName, "予想の生成に失敗（このソースのみスキップして続行）", ex);
+            }
+        }
+
+        /// <summary>catchup の引数（yyyy-MM-dd を1つ以上）を読む。不正なら使い方を出して null。</summary>
+        private static System.Collections.Generic.List<DateTime> ParseCatchUpDates(string[] args)
+        {
+            var dates = new System.Collections.Generic.List<DateTime>();
+            for (int i = 1; i < args.Length; i++)
+            {
+                if (!DateTime.TryParseExact(args[i], "yyyy-MM-dd",
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        System.Globalization.DateTimeStyles.None, out var date))
+                {
+                    _hadFailure = true;
+                    Console.WriteLine($"日付の形式が不正です: {args[i]}（例: catchup 2026-10-05）");
+                    return null;
+                }
+                dates.Add(date);
+            }
+
+            if (dates.Count == 0)
+            {
+                _hadFailure = true;
+                Console.WriteLine("日付を指定してください（例: catchup 2026-10-05 2026-10-06）");
+                return null;
+            }
+            return dates;
+        }
+
+        /// <summary>
+        /// 指定日の、結果か払戻が欠けているレースを取り直す。
+        ///
+        /// 対象はサイトに公開済みの投稿から選ぶ。欠けているものだけを取りに行くので、
+        /// 揃っているレースを書き換えることはない。
+        ///
+        /// データ源はレースごとに分ける。地方だけの日に JV-Link を開かないためで、
+        /// JRA-VAN のメンテナンス中にダイアログで止まり、地方の取り直しまで
+        /// 巻き込まれることがない（2026-10-06 に watch がこれで止まった）。
+        /// </summary>
+        private static void RunCatchUpForDate(
+            JvSpecComDataSource jvLink, JvSpecComDataSource umaConn, WordPress.WordPressClient wp, DateTime date)
+        {
+            System.Collections.Generic.List<Models.RaceKey> races;
+            try
+            {
+                races = wp.FindRacesMissingResultsAsync(date).GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                LogFailure("catchup", $"{date:yyyy-MM-dd} の対象レースを取得できませんでした", ex);
+                return;
+            }
+
+            Console.WriteLine($"{date:yyyy-MM-dd}: 結果か払戻が欠けているレース {races.Count}件");
+            if (races.Count == 0) return;
+
+            var jra = races.FindAll(IsJraTrack);
+            var nar = races.FindAll(k => !IsJraTrack(k));
+
+            if (jra.Count > 0) RunCatchUpFor(jvLink, wp, jra);
+            if (nar.Count > 0) RunCatchUpFor(umaConn, wp, nar);
+        }
+
+        /// <summary>中央競馬の競馬場コード（01 札幌 〜 10 小倉）。それ以外は地方競馬（UmaConn）。</summary>
+        private static bool IsJraTrack(Models.RaceKey key) =>
+            int.TryParse(key.TrackCode, out var code) && code >= 1 && code <= 10;
+
+        private static void RunCatchUpFor(
+            JvSpecComDataSource source, WordPress.WordPressClient wp, System.Collections.Generic.List<Models.RaceKey> races)
+        {
+            try
+            {
+                source.Initialize(AppConfig.JvLinkSoftwareId);
+                var summary = new RaceResultService(source, wp, AppConfig.RealtimePollInterval)
+                    .CatchUpAsync(races)
+                    .GetAwaiter().GetResult();
+
+                // 提供元にデータが無いのはこちらの異常ではないが、取得に失敗したものは残す。
+                if (summary.Failed > 0) _hadFailure = true;
+            }
+            catch (Exception ex)
+            {
+                LogFailure(source.SourceName, "取り直しに失敗（このソースのみスキップして続行）", ex);
             }
         }
 
