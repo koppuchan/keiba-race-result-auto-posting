@@ -84,6 +84,7 @@ powershell -ExecutionPolicy Bypass -File .\register-scheduled-tasks.ps1
 | `KeibaDataCollector-Morning` | 毎日 07:00 | 当日の出走表を取得・反映 |
 | `KeibaDataCollector-Predict` | 毎日 09:00 から15分ごと×12時間 | オッズの人気順から予想印を生成・反映 |
 | `KeibaDataCollector-Watch` | 毎日 09:30 から10分ごと×14時間 | 確定監視。止まっていれば起動し直す |
+| `KeibaDataCollector-Catchup` | 毎日 10:00 から20分ごと×13.5時間 | watch が取りこぼした結果（当日から7日分）を取り直す |
 
 `watch` は監視の打ち切り時刻（23:30）まで動き続け、そこで自分で終了します。停止トリガーは不要です。
 多重起動は禁止設定（同じCOMを二重に開かないため）にしています。
@@ -139,8 +140,17 @@ Select-String -Path .\logs\watch-*.log -Pattern 'watch start|watch end|\[watchdo
 
 ### 取りこぼした結果を後から反映する（catchup）
 
-`watch` は当日のレースしか見ないため、日付が変わると取りこぼしを拾えません。
-提供元の配信が遅れた日や、監視が止まった日は、次のコマンドで後から取り直します。
+**`KeibaDataCollector-Catchup` が20分ごとに、当日から7日分の欠けを自動で取り直します。手作業は不要です。**
+
+`watch` は朝に取得したレース一覧に載ったレースしか見ません。一覧の取得が失敗すると、
+結果自体は提供されていても取りに行きません（2026-10-10: JV-Link の一覧取得が `-413` で
+失敗し続け、中央24レースが反映されなかった）。catchup はサイトの投稿から欠けているレースを選んで
+1レースずつ取りに行くため、一覧の取得に依存しません。7日分を見るので、提供元の配信が
+日付をまたいで遅れても拾えます（2026-10-05 の欠けは 10-08 になって取得できた）。
+ログは `logs\catchup-YYYYMMDD.log` です。
+当日のまだ走っていないレースは「提供元にデータ無し」と出ますが、異常ではありません。
+
+7日より前を取り直すときや、すぐに確かめたいときは、次のコマンドを手で実行します。
 
 ```powershell
 cmd /c "chcp 65001 >nul && call secrets.local.bat >nul && cd /d bin\Debug\net48 && KeibaDataCollector.exe catchup 2026-10-05 2026-10-06"

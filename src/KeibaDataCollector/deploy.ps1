@@ -40,7 +40,8 @@ Set-Location $scriptDir
 
 # 常駐・繰り返し実行されるタスク。停止したら最後に必ず戻す。
 $RunningTasks = @('KeibaDataCollector-Watch', 'KeibaDataCollector-Predict')
-$AllTasks     = @('KeibaDataCollector-Morning') + $RunningTasks
+# Catchup は20分ごとに自分で起動するので、再開はしない（止めるのはビルド中にexeを掴まないため）。
+$AllTasks     = @('KeibaDataCollector-Morning', 'KeibaDataCollector-Catchup') + $RunningTasks
 
 # 止める対象は、このリポジトリでビルドしたexeだけにする。
 #
