@@ -211,7 +211,7 @@ namespace KeibaDataCollector
                         Console.WriteLine("  predict : 朝一オッズの人気順から予想印を生成しWordPressへ反映する。");
                         Console.WriteLine("  watch   : レース確定を監視し、結果・払戻を随時WordPressへ反映する。");
                         Console.WriteLine("  catchup : 指定日の、結果か払戻が欠けているレースを取り直して反映する。");
-                        Console.WriteLine("            例: catchup 2026-10-05 2026-10-06（速報の提供期間は1週間）");
+                        Console.WriteLine("            例: catchup 2026-10-05 2026-10-06 / catchup today / catchup recent（当日から7日分）");
                         Console.WriteLine("  probe   : 調査用。どのデータ種別で何が取得できるか確認する（WordPressへは書き込まない）。");
                         Console.WriteLine("            レースを指定する場合: probe 20260811-46-1R");
                         break;
@@ -298,6 +298,22 @@ namespace KeibaDataCollector
             var dates = new System.Collections.Generic.List<DateTime>();
             for (int i = 1; i < args.Length; i++)
             {
+                // タスクスケジューラからは日付を渡しにくいので、当日は "today" で指定できる。
+                if (string.Equals(args[i], "today", StringComparison.OrdinalIgnoreCase))
+                {
+                    dates.Add(DateTime.Today);
+                    continue;
+                }
+                // "recent" = 当日から遡って7日分（0B12 の提供期間）。定期実行で使う。
+                // 提供元の配信が日付をまたいで遅れても、手作業なしで拾えるようにするため
+                // （2026-10-05 の欠けは、当日は提供されず、10-08 になって取得できた）。
+                // 欠けが無い日はサイトへの照会1回で終わるので、毎回7日分見ても負荷は小さい。
+                if (string.Equals(args[i], "recent", StringComparison.OrdinalIgnoreCase))
+                {
+                    for (int back = 0; back < 7; back++)
+                        dates.Add(DateTime.Today.AddDays(-back));
+                    continue;
+                }
                 if (!DateTime.TryParseExact(args[i], "yyyy-MM-dd",
                         System.Globalization.CultureInfo.InvariantCulture,
                         System.Globalization.DateTimeStyles.None, out var date))

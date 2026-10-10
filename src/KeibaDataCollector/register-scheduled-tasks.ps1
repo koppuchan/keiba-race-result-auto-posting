@@ -8,6 +8,7 @@
       KeibaDataCollector-Morning : 毎日 -MorningTime に scheduled-morning.bat
       KeibaDataCollector-Predict : 毎日 -PredictTime に scheduled-predict.bat
       KeibaDataCollector-Watch   : 毎日 -WatchTime   に scheduled-watch.bat
+      KeibaDataCollector-Catchup : 毎日 -CatchupTime から20分ごとに scheduled-catchup.bat
 
     watch モードは監視の打ち切り時刻（23:30）まで動き続けます。-WatchTime から23:30まで
     10分ごとに起動を試み、止まっていた場合だけ起動し直します（動いている間は弾かれます）。
@@ -29,6 +30,10 @@
     確定監視の開始時刻（HH:mm）。既定 09:30。
     地方競馬のナイター開催まで監視が続くよう、余裕をもって早めに開始します。
 
+.PARAMETER CatchupTime
+    取りこぼした結果の取り直しを始める時刻（HH:mm）。既定 10:00。
+    最初のレースが終わる頃から、監視の打ち切り（23:30）まで20分ごとに実行します。
+
 .PARAMETER RunOnlyWhenLoggedOn
     指定すると「ログオン時のみ実行」で登録します（既定）。
     JV-Link / UmaConn はダイアログを出すことがあり、非対話セッションだと
@@ -49,6 +54,7 @@ param(
     [string] $MorningTime = '07:00',
     [string] $PredictTime = '09:00',
     [string] $WatchTime = '09:30',
+    [string] $CatchupTime = '10:00',
     [switch] $RunOnlyWhenLoggedOn = $true
 )
 
@@ -61,11 +67,12 @@ $script:TasksToResume = @()
 $morningBat = Join-Path $scriptDir 'scheduled-morning.bat'
 $predictBat = Join-Path $scriptDir 'scheduled-predict.bat'
 $watchBat = Join-Path $scriptDir 'scheduled-watch.bat'
+$catchupBat = Join-Path $scriptDir 'scheduled-catchup.bat'
 $exePath = Join-Path $scriptDir 'bin\Debug\net48\KeibaDataCollector.exe'
 $secrets = Join-Path $scriptDir 'secrets.local.bat'
 
 # --- 事前チェック ------------------------------------------------------------
-foreach ($required in @($morningBat, $predictBat, $watchBat, $exePath)) {
+foreach ($required in @($morningBat, $predictBat, $watchBat, $catchupBat, $exePath)) {
     if (-not (Test-Path $required)) {
         throw "必要なファイルが見つかりません: $required`nビルド済みか確認してください（dotnet build -c Debug）。"
     }
@@ -177,6 +184,19 @@ Register-KeibaTask -TaskName 'KeibaDataCollector-Predict' -BatPath $predictBat -
 Register-KeibaTask -TaskName 'KeibaDataCollector-Watch' -BatPath $watchBat -StartTime $WatchTime `
     -Description 'レース確定を監視し、結果・払戻をWordPressへ随時反映する。止まっていれば起動し直す' `
     -RepeatEvery (New-TimeSpan -Minutes 10) -RepeatFor (New-TimeSpan -Hours 14)
+
+# watch が取りこぼした結果を、当日のうちに自動で取り直す。
+#
+# watch は朝にレース一覧を取得し、そこに載ったレースだけを見る。一覧の取得が失敗すると
+# 結果自体は提供されていても取りに行かない（実際に発生 2026-10-10: JV-Link の一覧取得が
+# -413 で失敗し続け、中央の24レースが1件も反映されず、手作業の catchup で復旧した）。
+# catchup はサイトの投稿から「結果か払戻が欠けているレース」を選び、1レースずつ取りに行くので、
+# 一覧の取得に依存しない。当日から7日分を見るので、提供元の配信が日付をまたいで
+# 遅れた場合も、届いた時点で拾える（2026-10-05 の欠けは 10-08 になって取得できた）。
+# 欠けているレースだけを照会するため、20分ごとでも負荷は小さい。
+Register-KeibaTask -TaskName 'KeibaDataCollector-Catchup' -BatPath $catchupBat -StartTime $CatchupTime `
+    -Description 'watch が取りこぼした結果・払戻（当日から7日分）を20分ごとに取り直してWordPressへ反映する' `
+    -RepeatEvery (New-TimeSpan -Minutes 20) -RepeatFor (New-TimeSpan -Hours 13 -Minutes 30)
 
 # 登録し直したことで停止したタスクを再開する。
 # ここを忘れると、日中に更新した日はその後のレースが反映されないまま終わる。
