@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Threading;
 
 namespace KeibaDataCollector
@@ -27,8 +28,46 @@ namespace KeibaDataCollector
         /// <summary>後片付けにこれだけ待ってやり、過ぎたら強制的に終了させる。</summary>
         private static readonly TimeSpan GracePeriod = TimeSpan.FromSeconds(30);
 
-        /// <summary>Environment.Exit 自体も固まる場合に備えた二段目の猶予。</summary>
-        private static readonly TimeSpan HardKillAfter = TimeSpan.FromSeconds(10);
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr GetCurrentProcess();
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool TerminateProcess(IntPtr hProcess, uint exitCode);
+
+        /// <summary>
+        /// Windows の通常の終了処理（ExitProcess）を通さずに、プロセスをその場で終わらせる。
+        ///
+        /// UmaConn は終了処理の中で「Unexpected Memory Leak」ダイアログを出すことがある
+        /// （Delphi のメモリ管理が、DLL を外すときにリークを報告する）。
+        /// ExitProcess は呼び出し元以外のスレッドを先に止めてから DLL を外すため、
+        /// このダイアログが出た時点で、終了させるための監視スレッドはもう残っていない。
+        /// 以前は Environment.Exit を呼んでいたが、それも ExitProcess を通るので同じことになる。
+        ///
+        /// 実際に発生した障害（2026-10-13）:
+        ///   同じ VPS の keiba-ai-data-system（この収集アプリの派生）で、content と score が
+        ///   このダイアログを出したまま数時間残っていた。30秒で終了させる監視は入っていたが、
+        ///   上記の理由で働かなかった。こちらも同じ作りだったため、合わせて直している。
+        ///
+        /// TerminateProcess は DLL の終了処理を呼ばないので、ダイアログ自体が出ない。
+        /// JV-Link / UmaConn の Close は読み込みのたびに済ませており、
+        /// メモリやハンドルは OS が回収するため、ここで切って失うものは無い。
+        /// </summary>
+        public static void TerminateNow(int exitCode)
+        {
+            try { Console.Out.Flush(); } catch { }
+
+            try
+            {
+                TerminateProcess(GetCurrentProcess(), unchecked((uint) exitCode));
+            }
+            catch
+            {
+                // Windows 以外（開発環境）では kernel32 が無い。下の Kill で終える。
+            }
+
+            // TerminateProcess が成功すればここには来ない。
+            Process.GetCurrentProcess().Kill();
+        }
 
         /// <summary>
         /// 起動直後に呼ぶ。作業そのものが固まった場合の最後の歯止め。
@@ -57,9 +96,7 @@ namespace KeibaDataCollector
                 Console.Out.Flush();
 
                 // 作業が途中なので成功扱いにはしない。
-                new Thread(() => Environment.Exit(1)) { IsBackground = true }.Start();
-                Thread.Sleep(HardKillAfter);
-                Process.GetCurrentProcess().Kill();
+                TerminateNow(1);
             })
             {
                 IsBackground = true,
@@ -131,9 +168,7 @@ namespace KeibaDataCollector
                         Console.Out.Flush();
 
                         // 作業が途中なので成功扱いにはしない。
-                        new Thread(() => Environment.Exit(1)) { IsBackground = true }.Start();
-                        Thread.Sleep(HardKillAfter);
-                        Process.GetCurrentProcess().Kill();
+                        TerminateNow(1);
                         return;
                     }
                 }
@@ -161,12 +196,8 @@ namespace KeibaDataCollector
                     "（COM解放時のダイアログ等が原因。作業自体は完了しています）");
                 Console.Out.Flush();
 
-                // まずは終了コードを保ったまま終わらせる。
-                new Thread(() => Environment.Exit(exitCode)) { IsBackground = true }.Start();
-
-                // Environment.Exit も終了ハンドラで固まりうるので、最後は問答無用で落とす。
-                Thread.Sleep(HardKillAfter);
-                Process.GetCurrentProcess().Kill();
+                // 終了コードを保ったまま、終了処理を通さずに終わらせる（TerminateNow 参照）。
+                TerminateNow(exitCode);
             })
             {
                 IsBackground = true,

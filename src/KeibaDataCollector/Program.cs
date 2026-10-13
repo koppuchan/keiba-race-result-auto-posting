@@ -41,12 +41,17 @@ namespace KeibaDataCollector
                 LogFailure("起動", "処理を開始できませんでした", ex);
             }
 
+            var exitCode = _hadFailure ? 1 : 0;
             if (_hadFailure)
-            {
                 Console.WriteLine("異常終了: 上記のエラーを確認してください。");
-                return 1;
-            }
-            return 0;
+
+            // 作業は終わっているので、Windows の終了処理を通さずにここで終える。
+            // 通常どおり return すると、UmaConn がその終了処理の中で
+            // 「Unexpected Memory Leak」ダイアログを出し、プロセスが残り続けることがある
+            // （詳細は ShutdownWatchdog.TerminateNow）。
+            // setup は人が操作する用途で、利用キー等の保存を確実にしたいので通常どおり終える。
+            if (mode != "setup") ShutdownWatchdog.TerminateNow(exitCode);
+            return exitCode;
         }
 
         /// <summary>
