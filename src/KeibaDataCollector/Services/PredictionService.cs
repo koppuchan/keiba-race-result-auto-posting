@@ -45,19 +45,97 @@ namespace KeibaDataCollector.Services
         /// <summary>人気1位から順に割り当てる印。数を増やせば5番手以降にも付けられる。</summary>
         private static readonly string[] Marks = { "◎", "○", "▲", "△" };
 
-        public PredictionService(IRaceDataSource source, WordPressClient wp)
+        // このデータ源が受け持つレース（中央 = JV-Link、地方 = UmaConn）。null なら全レース。
+        private readonly Func<RaceKey, bool> _ownsRace;
+
+        // データ源の初期化（JVInit/NVInit）。対象レースがあるときだけ呼ぶ。
+        // 平日の中央のように受け持ちが無い日は JV-Link を開かないので、
+        // JRA-VAN のメンテナンス中にダイアログで止まることも無い（2026-10-06 に発生）。
+        private readonly Action _initialize;
+        private bool _initialized;
+
+        public PredictionService(IRaceDataSource source, WordPressClient wp,
+            Func<RaceKey, bool> ownsRace = null, Action initialize = null)
         {
             _source = source;
             _wp = wp;
+            _ownsRace = ownsRace;
+            _initialize = initialize;
+        }
+
+        private bool Owns(RaceKey key) => _ownsRace == null || _ownsRace(key);
+
+        private void EnsureInitialized()
+        {
+            if (_initialized) return;
+            _initialize?.Invoke();
+            _initialized = true;
+        }
+
+        /// <summary>
+        /// 予想を付けるレースの一覧。サイトの投稿（朝一バッチが全レースを投稿している）から、
+        /// まだ予想が揃っておらず、結果も出ていないレースを選ぶ。
+        ///
+        /// 以前は毎回、提供元のデータを全件読み込んで一覧を作っており、1回に3〜4分かかっていた。
+        /// 15分ごとに実行していたため、オッズの配信から予想の反映まで最大20分近く遅れ、
+        /// お客様から「締切に間に合わないレースがある」とご指摘をいただいた（2026-10-13）。
+        /// 提供元への負荷も大きかった（アクセスが過剰なIPは取得を制限されることがある）。
+        ///
+        /// サイトに聞けない・サイトにその日のレースが無い（朝一バッチの失敗など）ときは null を返し、
+        /// 呼び出し側は従来どおり提供元から一覧を取る。
+        /// </summary>
+        private async Task<(List<RaceKey> Races, int AlreadyPredicted)?> RacesFromSiteAsync(DateTime targetDate)
+        {
+            List<WordPressClient.DayRace> day;
+            try
+            {
+                day = await _wp.GetDayRacesAsync(targetDate);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[{_source.SourceName}] サイトのレース一覧を取得できませんでした（提供元から取得します）: {ex.Message}");
+                return null;
+            }
+            if (day.Count == 0) return null;
+
+            var own = day.Where(r => Owns(r.Key)).ToList();
+            var alreadyPredicted = own.Count(r => r.PredictionMarks >= Marks.Length);
+            var races = own
+                .Where(r => !r.Cancelled && !r.HasResult && r.PredictionMarks < Marks.Length)
+                .Select(r => r.Key)
+                .ToList();
+            return (races, alreadyPredicted);
         }
 
         public async Task RunAsync(DateTime targetDate, CancellationToken ct)
         {
             var started = DateTime.Now;
-            var races = RaceDiscovery.ForDate(_source, targetDate);
-            Console.WriteLine($"[{_source.SourceName}] {targetDate:yyyy-MM-dd} 予想対象レース: {races.Count}件");
 
-            int published = 0, already = 0, notOnSale = 0, oddsError = 0, failed = 0;
+            List<RaceKey> races;
+            bool fromSite;
+            int already = 0;
+            var site = await RacesFromSiteAsync(targetDate);
+            if (site.HasValue)
+            {
+                races = site.Value.Races;
+                already = site.Value.AlreadyPredicted;
+                fromSite = true;
+            }
+            else
+            {
+                EnsureInitialized();
+                races = RaceDiscovery.ForDate(_source, targetDate);
+                fromSite = false;
+            }
+            PostTimeStore.Apply(targetDate, races);
+
+            Console.WriteLine(
+                $"[{_source.SourceName}] {targetDate:yyyy-MM-dd} 予想対象レース: {races.Count}件" +
+                (fromSite ? $"（サイトの一覧から。予想済み{already}件）" : "（提供元の一覧から）"));
+
+            int published = 0, notOnSale = 0, oddsError = 0, failed = 0, afterPost = 0;
+            // 発走前のレースが1件でもあるときだけデータ源を開く（夜など、残りが発走済みだけなら開かない）。
+            if (races.Any(r => !r.PostDateTime.HasValue || DateTime.Now < r.PostDateTime.Value)) EnsureInitialized();
 
             foreach (var race in races)
             {
@@ -71,9 +149,19 @@ namespace KeibaDataCollector.Services
                     // （57レース×1日24回＝1368回）。
                     // オッズ取得は1レースあたり数十秒かかることがあり、
                     // 1回の実行が長引くほど、オッズ公開から反映までの遅れが大きくなる。
-                    if (await _wp.ShouldSkipPredictionAsync(race, Marks.Length))
+                    // サイトの一覧は「予想が揃っていない・結果が出ていない」ものだけなので、確認は不要。
+                    if (!fromSite && await _wp.ShouldSkipPredictionAsync(race, Marks.Length))
                     {
                         already++;
+                        continue;
+                    }
+
+                    // 発走時刻を過ぎたレースには予想を出さない。
+                    // 結果の反映が遅れた日に、発走後のオッズ（確定オッズ）で印を付けた
+                    // 「後出し」の予想が載るおそれがあった（2026-10-09）。
+                    if (race.PostDateTime.HasValue && DateTime.Now >= race.PostDateTime.Value)
+                    {
+                        afterPost++;
                         continue;
                     }
 
@@ -124,7 +212,7 @@ namespace KeibaDataCollector.Services
             // オッズ公開から反映までの遅れがそのまま伸びる。調整の判断材料として必ず残す。
             Console.WriteLine(
                 $"[{_source.SourceName}] 予想の反映完了: 新規{published}件 / 反映済み{already}件 / " +
-                $"発売前{notOnSale}件 / オッズ取得エラー{oddsError}件 / 反映失敗{failed}件 " +
+                $"発売前{notOnSale}件 / 発走済み{afterPost}件 / オッズ取得エラー{oddsError}件 / 反映失敗{failed}件 " +
                 $"（所要 {(DateTime.Now - started).TotalMinutes:0.0}分）");
 
             // 「1件も新規が無い」は正常な状態でも起きる（前回までに全レース反映済み）。

@@ -10,6 +10,18 @@ namespace KeibaDataCollector.Models
         public DateTime RaceDate { get; set; }
         public int RaceNumber { get; set; }
 
+        /// <summary>
+        /// 発走時刻。RAレコードの「発走時刻」から取る（朝一バッチが data\post-times-*.json に保存）。
+        /// 分からない場合は null で、その場合は時刻による絞り込みをしない（従来どおりの動き）。
+        /// </summary>
+        public TimeSpan? PostTime { get; set; }
+
+        /// <summary>発走日時。発走時刻が分からなければ null。</summary>
+        public DateTime? PostDateTime => PostTime.HasValue ? RaceDate.Date + PostTime.Value : (DateTime?) null;
+
+        /// <summary>中央競馬の競馬場コード（01 札幌 〜 10 小倉）。それ以外は地方競馬（UmaConn）。</summary>
+        public bool IsJra => int.TryParse(TrackCode, out var code) && code >= 1 && code <= 10;
+
         public string AsSlug() => $"{RaceDate:yyyyMMdd}-{TrackCode}-{RaceNumber}R";
 
         /// <summary>JVRTOpenのkey引数（レース単位）形式。JV-Linkインターフェース仕様書の

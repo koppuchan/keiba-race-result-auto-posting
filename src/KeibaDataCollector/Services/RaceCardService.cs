@@ -50,6 +50,8 @@ namespace KeibaDataCollector.Services
 
             var entriesByRace = new Dictionary<string, List<RaceCardEntry>>();
             var raceKeys = new Dictionary<string, RaceKey>();
+            // 当日の発走時刻（RAレコードから）。結果の確認や予想を発走時刻で絞り込むために保存する。
+            var postTimes = new Dictionary<string, RaceKey>();
 
             int totalRecords = 0;
             int seRecords = 0;
@@ -77,6 +79,22 @@ namespace KeibaDataCollector.Services
 
                     var typeId = JvRecordParser.GetRecordTypeId(buffer);
                     typeCounts[typeId] = typeCounts.TryGetValue(typeId, out var c) ? c + 1 : 1;
+
+                    if (typeId == "RA")
+                    {
+                        // 同じレースのRAは何度も流れてくる。後から来たものが新しいので上書きする。
+                        try
+                        {
+                            var (raKey, _) = JvRecordParser.ParseCornerPassage(buffer);
+                            if (raKey.RaceDate.Date == targetDate.Date && raKey.PostTime.HasValue)
+                                postTimes[raKey.AsSlug()] = raKey;
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"[{_source.SourceName}] RAレコードのパース失敗（このレコードのみスキップ）: {ex.Message}");
+                        }
+                        continue;
+                    }
 
                     if (typeId != "SE") continue;
                     seRecords++;
@@ -117,6 +135,9 @@ namespace KeibaDataCollector.Services
             {
                 _source.Close();
             }
+
+            PostTimeStore.Merge(targetDate, postTimes.Values);
+            Console.WriteLine($"[{_source.SourceName}] 発走時刻を保存: {postTimes.Count}レース");
 
             // 取得内容の内訳。データが届いているか／対象日の絞り込みが効いているかを
             // 運用時に確認できるよう、通常ログとして残す。

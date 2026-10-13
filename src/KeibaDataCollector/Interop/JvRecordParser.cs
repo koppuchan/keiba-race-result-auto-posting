@@ -199,7 +199,22 @@ namespace KeibaDataCollector.Interop
                     passage.Add(jyuni);
             }
 
-            return (ExtractRaceKey(ra.id), passage);
+            var key = ExtractRaceKey(ra.id);
+            key.PostTime = ParsePostTime(ra.HassoTime);
+            return (key, passage);
+        }
+
+        /// <summary>
+        /// RAレコードの発走時刻（"hhmm"）を読む。
+        /// 未設定（空白・"0000"）や範囲外は null（＝分からない）として扱う。
+        /// </summary>
+        public static TimeSpan? ParsePostTime(string hhmm)
+        {
+            var s = (hhmm ?? "").Trim();
+            if (s.Length != 4 || s == "0000") return null;
+            if (!int.TryParse(s.Substring(0, 2), out var h) || !int.TryParse(s.Substring(2, 2), out var m)) return null;
+            if (h < 0 || h > 23 || m < 0 || m > 59) return null;
+            return new TimeSpan(h, m, 0);
         }
 
         /// <summary>着差コード(3バイト: 1バイト目=整数部の馬身数 or 特殊コード、2-3バイト目=分数)を
