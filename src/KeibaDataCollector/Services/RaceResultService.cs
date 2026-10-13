@@ -42,24 +42,57 @@ namespace KeibaDataCollector.Services
         // これが無いと同じ中止レースに毎回WordPressへ書きに行ってしまう。
         private readonly HashSet<string> _cancelledNotified = new HashSet<string>();
 
-        public RaceResultService(IRaceDataSource source, WordPressClient wp, TimeSpan pollInterval)
+        // このデータ源が受け持つレース（中央 = JV-Link、地方 = UmaConn）。null なら全レース。
+        private readonly Func<RaceKey, bool> _ownsRace;
+
+        // レースごとの、最後に結果を問い合わせた時刻。問い合わせの間隔を空けるために使う。
+        private readonly Dictionary<string, DateTime> _lastChecked = new Dictionary<string, DateTime>();
+
+        // サイトの投稿から分かった、当日のレースの有無。null = まだ分からない（サイトに聞けていない）。
+        private bool? _siteHasAnyRaces;
+        private bool? _siteHasOwnRaces;
+
+        public RaceResultService(IRaceDataSource source, WordPressClient wp, TimeSpan pollInterval,
+            Func<RaceKey, bool> ownsRace = null)
         {
             _source = source;
             _wp = wp;
             _pollInterval = pollInterval;
+            _ownsRace = ownsRace;
         }
+
+        private bool Owns(RaceKey key) => _ownsRace == null || _ownsRace(key);
 
         // ポーリングが生きているのに未確定レコードは何もログを出さないため、外から見ると
         // 「待機中」と「詰まっている」の区別がつかない。一定周期ごとに状況を出力する。
         private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromMinutes(2);
 
-        // レース一覧を取り直す間隔。起動時に1回だけ取得する作りだと、
-        // その時点でまだ当日のレースが配信されていなければ「0件」で即終了し、
-        // その日は一切反映されないまま終わってしまう（実機で本日分が0件のまま
-        // 終了する事象が発生）。定期的に取り直して拾い直す。
-        // 一覧に現れてから監視対象に入るまでの遅れがそのまま反映の遅れになるため、
-        // 短すぎない範囲で細かく取り直す。
-        private static readonly TimeSpan RediscoverInterval = TimeSpan.FromMinutes(10);
+        // 監視するレースの一覧は、サイトの投稿（朝一バッチが全レースを投稿している）から取る。
+        // サイトへの問い合わせは軽いので、10分ごとに取り直す。
+        private static readonly TimeSpan SiteListInterval = TimeSpan.FromMinutes(10);
+
+        // 提供元のデータを全件読み込んでのレース一覧の取得は、起動時の1回だけにする。
+        // サイトのレース一覧が使えないとき（サイトに聞けない・その日の投稿が無い）に限り、
+        // 従来どおり取り直すが、その間隔も1時間にする。
+        //
+        // 以前は10分ごとに全件を読み込んでいた。地方（UmaConn）は1回に5〜15分かかり、
+        // 2024年からの全履歴を毎回読み直す、提供元への大きな負荷だった。提供元はアクセスが
+        // 過剰なIPからの取得を制限することがあり、2026-10-05 以降に続いた「昼ごろから結果が
+        // 『データ無し』になる」症状の有力な原因と考えている。読み込み中は結果の確認も止まる。
+        // 起動時の1回は、サイトに載っていないレースや前日以前の中止を拾うための保険として残す。
+        private static readonly TimeSpan DiscoveryInterval = TimeSpan.FromHours(1);
+
+        // 1レースの結果を問い合わせる間隔。発走時刻を過ぎてから問い合わせを始める。
+        //
+        // 以前は未確定の全レースを20秒ごとに問い合わせており、1日あたり約13万回になっていた
+        // （発走前で結果があるはずのないレースにも聞いていた）。結果は発走の数分後にしか
+        // 出ないので、1分ごとでも反映の遅れは最大1分程度にとどまる。
+        private static readonly TimeSpan CheckInterval = TimeSpan.FromMinutes(1);
+
+        // 発走から1時間たっても結果が揃わないレースは、提供元の配信が止まっていることが多い。
+        // 問い合わせを5分ごとに落とす（取りこぼしは catchup も20分ごとに拾う）。
+        private static readonly TimeSpan LateAfter = TimeSpan.FromHours(1);
+        private static readonly TimeSpan LateCheckInterval = TimeSpan.FromMinutes(5);
 
         // その日の監視を打ち切る時刻。地方競馬のナイター（概ね21時台まで）を
         // 見終えてから終了し、翌日のトリガーを妨げないようにする。
@@ -85,9 +118,17 @@ namespace KeibaDataCollector.Services
         public async Task<CatchUpSummary> CatchUpAsync(IReadOnlyList<RaceKey> races)
         {
             var summary = new CatchUpSummary();
+            var notStarted = 0;
 
             foreach (var raceKey in races)
             {
+                // 発走前のレースには結果があるはずがないので、問い合わせない。
+                if (raceKey.PostDateTime.HasValue && DateTime.Now < raceKey.PostDateTime.Value)
+                {
+                    notStarted++;
+                    continue;
+                }
+
                 var withDataBefore = _realtimeWithData;
                 try
                 {
@@ -120,7 +161,8 @@ namespace KeibaDataCollector.Services
 
             Console.WriteLine(
                 $"[{_source.SourceName}] 取り直し完了: 対象{races.Count}件 / 確定{summary.Confirmed}件 / " +
-                $"一部のみ{summary.Partial}件 / データ無し{summary.NoData}件 / 失敗{summary.Failed}件");
+                $"一部のみ{summary.Partial}件 / データ無し{summary.NoData}件 / 失敗{summary.Failed}件 / " +
+                $"発走前{notStarted}件");
             return summary;
         }
 
@@ -131,6 +173,7 @@ namespace KeibaDataCollector.Services
             var pending = new List<RaceKey>();
 
             var lastHeartbeat = DateTime.Now;
+            var lastSiteList = DateTime.MinValue;
             var lastDiscovery = DateTime.MinValue;
             var cutoff = targetDate.Date.Add(DailyCutoff);
 
@@ -139,22 +182,29 @@ namespace KeibaDataCollector.Services
                 // このループが回らなくなったら、プロセスごと起動し直させる（ShutdownWatchdog）。
                 ShutdownWatchdog.ReportProgress(_source.SourceName);
 
-                // 起動直後と、以降は一定間隔でレース一覧を取り直す。
-                // 開催途中で追加されたレースや、起動が早すぎた場合も拾える。
-                if (DateTime.Now - lastDiscovery >= RediscoverInterval)
+                // 監視するレースは、まずサイトの投稿から取る（軽い）。
+                if (DateTime.Now - lastSiteList >= SiteListInterval)
+                {
+                    await MergeSiteRacesAsync(targetDate, pending, completed);
+                    lastSiteList = DateTime.Now;
+                }
+
+                // 提供元の全件読み込みは、起動時の1回だけ（DiscoveryInterval 参照）。
+                // サイトに当日のレースがあり、その中にこのデータ源の受け持ちが1件も無い日
+                // （平日の中央など）は、起動時も読まない。JRA-VAN のメンテナンス中に JV-Link を開いて
+                // ダイアログで止まることも避けられる（2026-10-06 に発生）。
+                // サイトに聞けなかった・サイトにその日のレースが無い（朝一バッチの失敗など）ときは、
+                // 従来どおり提供元から一覧を取り、1時間ごとに取り直す。
+                var noOwnRacesToday = _siteHasAnyRaces == true && _siteHasOwnRaces == false;
+                var siteListUsable = _siteHasAnyRaces == true;
+                var firstDiscovery = lastDiscovery == DateTime.MinValue;
+                if (!noOwnRacesToday
+                    && (firstDiscovery || !siteListUsable)
+                    && DateTime.Now - lastDiscovery >= DiscoveryInterval)
                 {
                     MergeDiscoveredRaces(targetDate, pending, completed);
-                    // 間隔は取得が「終わってから」数える。
-                    //
-                    // 始めた時刻で数えていたため、取得が間隔（10分）より長くかかると
-                    // 終わった時点で次の取得が来ており、取得だけを繰り返していた。
-                    // 各レースの確認は取得と取得の合間に1回ずつしか行われず、
-                    // それも大量の読み込みを閉じた直後に限られる。
-                    // 実際に発生（2026-09-29, 2026-10-05）: 地方の取得が1回13〜18分かかり、
-                    // プロセスは動き続けていたのに、地方の結果が 9/29 は58件、
-                    // 10/05 は14時以降39件、確定しないままだった。
-                    // それが確定しなかった直接の原因かは未確認（「監視中...」行の
-                    // 0B12照会の内訳で確かめる）。いずれにせよ確認の間隔は確保する。
+                    // 間隔は取得が「終わってから」数える。取得に時間がかかっても、
+                    // 次の取得までの間に各レースの確認ができるようにするため。
                     lastDiscovery = DateTime.Now;
                 }
 
@@ -163,6 +213,9 @@ namespace KeibaDataCollector.Services
                     if (ct.IsCancellationRequested) break;
 
                     var raceKey = pending[i];
+                    if (!IsDue(raceKey)) continue;
+                    _lastChecked[raceKey.AsSlug()] = DateTime.Now;
+
                     bool confirmed;
                     try
                     {
@@ -199,8 +252,9 @@ namespace KeibaDataCollector.Services
                     // ヒープ破損でプロセスごと落ちる（実機で発生）。
                     // 値が単調に増え続けていないかを、この行だけで追えるようにしておく。
                     var workingSetMb = Environment.WorkingSet / 1024d / 1024d;
+                    var started = pending.Count(k => !k.PostDateTime.HasValue || DateTime.Now >= k.PostDateTime.Value);
                     Console.WriteLine(
-                        $"[{_source.SourceName}] 監視中... 未確定{pending.Count}件 / 確定済み{completed.Count}件 " +
+                        $"[{_source.SourceName}] 監視中... 未確定{pending.Count}件（うち発走済み{started}件） / 確定済み{completed.Count}件 " +
                         $"（{DateTime.Now:HH:mm:ss}時点、メモリ{workingSetMb:0}MB）。" +
                         $" 0B12照会: データ無し{_realtimeNoData} / 空{_realtimeEmpty} / あり{_realtimeWithData}");
                     _realtimeNoData = _realtimeEmpty = _realtimeWithData = 0;
@@ -226,6 +280,68 @@ namespace KeibaDataCollector.Services
             }
         }
 
+        /// <summary>
+        /// このレースの結果を今問い合わせるべきか。
+        /// 発走前は問い合わせない。発走後は1分ごと、発走から1時間を過ぎたら5分ごと。
+        /// 発走時刻が分からないレースは1分ごと（取りこぼすより、多めに聞くほうに倒す）。
+        /// </summary>
+        private bool IsDue(RaceKey raceKey)
+        {
+            var now = DateTime.Now;
+            var post = raceKey.PostDateTime;
+            if (post.HasValue && now < post.Value) return false;
+
+            var interval = post.HasValue && now - post.Value > LateAfter ? LateCheckInterval : CheckInterval;
+            return !_lastChecked.TryGetValue(raceKey.AsSlug(), out var last) || now - last >= interval;
+        }
+
+        /// <summary>
+        /// サイトに公開済みの当日のレースのうち、このデータ源の受け持ちで結果か払戻が欠けているものを
+        /// 監視対象に足す。あわせて、監視中のレースに発走時刻を当てはめる。
+        /// </summary>
+        private async Task MergeSiteRacesAsync(DateTime targetDate, List<RaceKey> pending, HashSet<string> completed)
+        {
+            List<WordPressClient.DayRace> day;
+            try
+            {
+                day = await _wp.GetDayRacesAsync(targetDate);
+            }
+            catch (Exception ex)
+            {
+                // サイトに聞けなくても、提供元からの一覧で監視は続けられる。
+                Console.WriteLine($"[{_source.SourceName}] サイトのレース一覧を取得できませんでした（監視は継続）: {ex.Message}");
+                _siteHasAnyRaces = _siteHasOwnRaces = null;
+                return;
+            }
+
+            var own = day.Where(r => Owns(r.Key)).ToList();
+            _siteHasAnyRaces = day.Count > 0;
+            _siteHasOwnRaces = own.Count > 0;
+
+            var missing = own.Where(r => !r.Cancelled && !(r.HasResult && r.HasPayouts)).Select(r => r.Key).ToList();
+            PostTimeStore.Apply(targetDate, missing);
+            // 起動後に朝一バッチが発走時刻を保存した場合にも効くよう、監視中のレースにも当てはめる。
+            PostTimeStore.Apply(targetDate, pending);
+
+            var known = new HashSet<string>(pending.Select(k => k.AsSlug()));
+            var added = 0;
+            foreach (var raceKey in missing)
+            {
+                var slug = raceKey.AsSlug();
+                if (completed.Contains(slug) || known.Contains(slug)) continue;
+                pending.Add(raceKey);
+                known.Add(slug);
+                added++;
+            }
+
+            if (added > 0)
+            {
+                Console.WriteLine(
+                    $"[{_source.SourceName}] {targetDate:yyyy-MM-dd} サイトのレース一覧から{added}件を監視対象に追加" +
+                    $"（受け持ち{own.Count}件） 未確定{pending.Count}件 / 確定済み{completed.Count}件");
+            }
+        }
+
         /// <summary>当日のレース一覧を取り直し、未確定かつ未登録のものを監視対象に足す。
         /// 取得に失敗しても、既に監視中のレースは止めない。</summary>
         private void MergeDiscoveredRaces(DateTime targetDate, List<RaceKey> pending, HashSet<string> completed)
@@ -243,6 +359,10 @@ namespace KeibaDataCollector.Services
             }
 
             var discovered = listing.Active;
+
+            // RAレコードには発走時刻がある。朝一バッチが保存できなかった場合に備えて、ここでも保存する。
+            PostTimeStore.Merge(targetDate, discovered);
+            PostTimeStore.Apply(targetDate, discovered);
 
             // 中止が蓄積系に載るのは開催の翌日以降なので、ここで拾えるのは主に前日以前のぶん。
             // 当日ぶんは CheckAndPublishRaceAsync が速報系の区分9で先に片付けている。

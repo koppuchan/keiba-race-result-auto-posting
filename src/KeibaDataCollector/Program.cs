@@ -141,8 +141,8 @@ namespace KeibaDataCollector
 
                             // ソースごとに独立してtry/catchし、片方の失敗がもう片方の監視を止めない
                             // ようにする。
-                            var jvResultTask = RunWatchFor(jvLink, wp, cts.Token);
-                            var umaResultTask = RunWatchFor(umaConn, wp, cts.Token);
+                            var jvResultTask = RunWatchFor(jvLink, wp, cts.Token, k => k.IsJra);
+                            var umaResultTask = RunWatchFor(umaConn, wp, cts.Token, k => !k.IsJra);
 
                             try
                             {
@@ -171,8 +171,8 @@ namespace KeibaDataCollector
                             AppConfig.WordPressUser,
                             AppConfig.WordPressAppPassword);
 
-                        RunPredictFor(jvLink, wp);
-                        RunPredictFor(umaConn, wp);
+                        RunPredictFor(jvLink, wp, k => k.IsJra);
+                        RunPredictFor(umaConn, wp, k => !k.IsJra);
                         break;
                     }
 
@@ -280,12 +280,13 @@ namespace KeibaDataCollector
             }
         }
 
-        private static void RunPredictFor(JvSpecComDataSource source, WordPress.WordPressClient wp)
+        private static void RunPredictFor(
+            JvSpecComDataSource source, WordPress.WordPressClient wp, Func<Models.RaceKey, bool> ownsRace)
         {
             try
             {
-                source.Initialize(AppConfig.JvLinkSoftwareId);
-                new PredictionService(source, wp)
+                // 初期化は対象レースがあるときだけ行う（PredictionService._initialize 参照）。
+                new PredictionService(source, wp, ownsRace, () => source.Initialize(AppConfig.JvLinkSoftwareId))
                     .RunAsync(DateTime.Today, CancellationToken.None)
                     .GetAwaiter().GetResult();
             }
@@ -363,19 +364,21 @@ namespace KeibaDataCollector
                 return;
             }
 
-            Console.WriteLine($"{date:yyyy-MM-dd}: 結果か払戻が欠けているレース {races.Count}件");
+            // 発走前のレースは結果があるはずがないので問い合わせない（当日分のみ。発走時刻は朝一バッチが保存）。
+            Services.PostTimeStore.Apply(date, races);
+            var notStarted = races.RemoveAll(k => k.PostDateTime.HasValue && DateTime.Now < k.PostDateTime.Value);
+
+            Console.WriteLine(
+                $"{date:yyyy-MM-dd}: 結果か払戻が欠けているレース {races.Count + notStarted}件" +
+                (notStarted > 0 ? $"（うち発走前{notStarted}件は対象外）" : ""));
             if (races.Count == 0) return;
 
-            var jra = races.FindAll(IsJraTrack);
-            var nar = races.FindAll(k => !IsJraTrack(k));
+            var jra = races.FindAll(k => k.IsJra);
+            var nar = races.FindAll(k => !k.IsJra);
 
             if (jra.Count > 0) RunCatchUpFor(jvLink, wp, jra);
             if (nar.Count > 0) RunCatchUpFor(umaConn, wp, nar);
         }
-
-        /// <summary>中央競馬の競馬場コード（01 札幌 〜 10 小倉）。それ以外は地方競馬（UmaConn）。</summary>
-        private static bool IsJraTrack(Models.RaceKey key) =>
-            int.TryParse(key.TrackCode, out var code) && code >= 1 && code <= 10;
 
         private static void RunCatchUpFor(
             JvSpecComDataSource source, WordPress.WordPressClient wp, System.Collections.Generic.List<Models.RaceKey> races)
@@ -418,11 +421,12 @@ namespace KeibaDataCollector
         /// 落ちても間隔をあけて再開し、最後まで粘る。
         /// </summary>
         private static async System.Threading.Tasks.Task RunWatchFor(
-            JvSpecComDataSource source, WordPress.WordPressClient wp, CancellationToken ct)
+            JvSpecComDataSource source, WordPress.WordPressClient wp, CancellationToken ct,
+            Func<Models.RaceKey, bool> ownsRace)
         {
             try
             {
-                await RunWatchUntilCutoff(source, wp, ct);
+                await RunWatchUntilCutoff(source, wp, ct, ownsRace);
             }
             finally
             {
@@ -432,7 +436,8 @@ namespace KeibaDataCollector
         }
 
         private static async System.Threading.Tasks.Task RunWatchUntilCutoff(
-            JvSpecComDataSource source, WordPress.WordPressClient wp, CancellationToken ct)
+            JvSpecComDataSource source, WordPress.WordPressClient wp, CancellationToken ct,
+            Func<Models.RaceKey, bool> ownsRace)
         {
             var attempt = 0;
 
@@ -446,7 +451,7 @@ namespace KeibaDataCollector
                 try
                 {
                     source.Initialize(AppConfig.JvLinkSoftwareId);
-                    await new RaceResultService(source, wp, AppConfig.RealtimePollInterval)
+                    await new RaceResultService(source, wp, AppConfig.RealtimePollInterval, ownsRace)
                         .RunWatchLoopAsync(DateTime.Today, ct);
 
                     // 打ち切り時刻まで動ききった＝その日の監視は完了。

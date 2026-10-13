@@ -218,15 +218,31 @@ namespace KeibaDataCollector.WordPress
             return true;
         }
 
+        /// <summary>サイトに公開済みのレース1件の状態。</summary>
+        public class DayRace
+        {
+            public RaceKey Key;
+            public bool HasResult;
+            public bool HasPayouts;
+            public int PredictionMarks;
+            public bool Cancelled;
+        }
+
         /// <summary>
-        /// 指定日のレースのうち、結果か払戻が欠けているもの（中止を除く）を返す。catchup 用。
+        /// 指定日にサイトへ公開済みのレースと、その状態の一覧。
+        ///
+        /// watch・predict・catchup が「その日のレース」を知るために使う。
+        /// 以前は各処理が提供元（UmaConn/JV-Link）のデータを全件読み込んでレース一覧を作っており、
+        /// 1回に数分〜15分かかるうえ、提供元への大きな負荷になっていた
+        /// （提供元はアクセスが過剰なIPからの取得を制限することがある）。
+        /// レースは朝一バッチがすべて投稿しているので、その投稿を一覧として使う。
         ///
         /// 投稿の公開日で絞り込む。投稿は開催当日の朝一バッチで作られるため、
         /// 公開日と開催日は一致する。念のため race_key の日付でも確かめる。
         /// </summary>
-        public async Task<List<RaceKey>> FindRacesMissingResultsAsync(DateTime date)
+        public async Task<List<DayRace>> GetDayRacesAsync(DateTime date)
         {
-            var missing = new List<RaceKey>();
+            var races = new List<DayRace>();
             var prefix = date.ToString("yyyyMMdd") + "-";
 
             // 1日分は中央と地方を合わせて100件を超えることがあるため、ページを送って全部読む。
@@ -248,17 +264,38 @@ namespace KeibaDataCollector.WordPress
                 {
                     var meta = post.Meta;
                     if (meta?.RaceKey == null || !meta.RaceKey.StartsWith(prefix)) continue;
-                    if (meta.RaceStatus == "cancelled") continue;
-                    if (HasContent(meta.RaceResult) && HasContent(meta.Payouts)) continue;
 
                     var key = RaceKey.TryParseSlug(meta.RaceKey);
-                    if (key != null) missing.Add(key);
+                    if (key == null) continue;
+
+                    races.Add(new DayRace
+                    {
+                        Key = key,
+                        HasResult = HasContent(meta.RaceResult),
+                        HasPayouts = HasContent(meta.Payouts),
+                        PredictionMarks = CountPredictionMarks(meta.Predictions),
+                        Cancelled = meta.RaceStatus == "cancelled",
+                    });
                 }
 
                 if (posts.Length < 100) break;
             }
 
-            missing.Sort((a, b) => string.CompareOrdinal(a.AsSlug(), b.AsSlug()));
+            races.Sort((a, b) => string.CompareOrdinal(a.Key.AsSlug(), b.Key.AsSlug()));
+            return races;
+        }
+
+        /// <summary>
+        /// 指定日のレースのうち、結果か払戻が欠けているもの（中止を除く）を返す。catchup と watch 用。
+        /// </summary>
+        public async Task<List<RaceKey>> FindRacesMissingResultsAsync(DateTime date)
+        {
+            var missing = new List<RaceKey>();
+            foreach (var race in await GetDayRacesAsync(date))
+            {
+                if (race.Cancelled || (race.HasResult && race.HasPayouts)) continue;
+                missing.Add(race.Key);
+            }
             return missing;
         }
 
