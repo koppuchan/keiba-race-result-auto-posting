@@ -197,8 +197,12 @@ namespace KeibaDataCollector
                         // 調査用。どのデータ種別で何が取得できるかを実際に叩いて確認する
                         // （地方競馬でオッズ・人気が別種別で提供されていないかの確認用）。
                         // WordPressには一切書き込まない。
-                        RunProbeFor(jvLink, arg);
-                        RunProbeFor(umaConn, arg);
+                        //
+                        // レースを指定した場合は、そのレースを扱うデータ源だけを調べる
+                        // （中央のレースを UmaConn に聞いても「データ無し」が並ぶだけで紛らわしいため）。
+                        var probeKey = Models.RaceKey.TryParseSlug(arg);
+                        if (probeKey == null || probeKey.IsJra) RunProbeFor(jvLink, arg);
+                        if (probeKey == null || !probeKey.IsJra) RunProbeFor(umaConn, arg);
                         break;
 
                     case "setup":
