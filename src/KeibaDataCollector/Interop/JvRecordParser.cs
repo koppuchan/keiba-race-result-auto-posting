@@ -204,6 +204,61 @@ namespace KeibaDataCollector.Interop
             return (key, passage);
         }
 
+        /// <summary>データマイニング予想1レース分（DM: タイム型 / TM: 対戦型）。</summary>
+        public class MiningRecord
+        {
+            public RaceKey Key;
+            public string Kind;            // "DM"（タイム型）または "TM"（対戦型）
+            public string DataKubun;
+            public string MadeAt;          // データ作成年月日＋時分（例: 2026/11/21 06:30）
+            public List<(int Umaban, string Value)> Horses = new List<(int, string)>();
+
+            /// <summary>
+            /// 評価の高い順の馬番。
+            /// タイム型は予想走破タイムが短いほど上、対戦型は予測スコアが高いほど上。
+            /// 値が空・0の馬（未提供・取消など）は除く。
+            /// </summary>
+            public List<int> RankedUmaban()
+            {
+                var valid = Horses
+                    .Select(h => (h.Umaban, Num: int.TryParse(h.Value.Trim(), out var v) ? v : 0))
+                    .Where(h => h.Umaban > 0 && h.Num > 0);
+                var ordered = Kind == "DM" ? valid.OrderBy(h => h.Num) : valid.OrderByDescending(h => h.Num);
+                return ordered.Select(h => h.Umaban).ToList();
+            }
+        }
+
+        /// <summary>"DM"／"TM"レコードを読む。それ以外の種別は null。</summary>
+        public static MiningRecord ParseMining(string rawRecord)
+        {
+            var type = GetRecordTypeId(rawRecord);
+            var record = new MiningRecord { Kind = type };
+
+            if (type == "DM")
+            {
+                var dm = new JV_DM_INFO();
+                dm.SetDataB(ref rawRecord);
+                record.Key = ExtractRaceKey(dm.id);
+                record.DataKubun = dm.head.DataKubun;
+                record.MadeAt = $"{dm.head.MakeDate.Year}/{dm.head.MakeDate.Month}/{dm.head.MakeDate.Day} {dm.MakeHM.Hour}:{dm.MakeHM.Minute}";
+                foreach (var h in dm.DMInfo)
+                    if (SafeInt(h.Umaban) > 0) record.Horses.Add((SafeInt(h.Umaban), h.DMTime ?? ""));
+                return record;
+            }
+            if (type == "TM")
+            {
+                var tm = new JV_TM_INFO();
+                tm.SetDataB(ref rawRecord);
+                record.Key = ExtractRaceKey(tm.id);
+                record.DataKubun = tm.head.DataKubun;
+                record.MadeAt = $"{tm.head.MakeDate.Year}/{tm.head.MakeDate.Month}/{tm.head.MakeDate.Day} {tm.MakeHM.Hour}:{tm.MakeHM.Minute}";
+                foreach (var h in tm.TMInfo)
+                    if (SafeInt(h.Umaban) > 0) record.Horses.Add((SafeInt(h.Umaban), h.TMScore ?? ""));
+                return record;
+            }
+            return null;
+        }
+
         /// <summary>
         /// RAレコードの発走時刻（"hhmm"）を読む。
         /// 未設定（空白・"0000"）や範囲外は null（＝分からない）として扱う。
