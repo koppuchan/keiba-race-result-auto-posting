@@ -23,6 +23,9 @@
 
   <ItemGroup>
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <!-- 発売前スコア（予想印）の算出で、keiba-ai-data-system の過去データ（SQLite）を読み取り専用で読む。
+         先方と同じ版にそろえる（x86のネイティブDLLが同梱される）。 -->
+    <PackageReference Include="System.Data.SQLite.Core" Version="1.0.118" />
   </ItemGroup>
 
   <ItemGroup>

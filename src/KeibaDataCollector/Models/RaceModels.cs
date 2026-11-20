@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Newtonsoft.Json;
 
 namespace KeibaDataCollector.Models
 {
@@ -55,6 +56,12 @@ namespace KeibaDataCollector.Models
         public double Kinryo { get; set; }
         public string JockeyName { get; set; }
         public string TrainerName { get; set; }
+
+        // 過去データと突き合わせるための識別コード（発売前スコアの算出用）。
+        // サイトの出走表には不要なので、WordPressへ送るJSONには含めない。
+        [JsonIgnore] public string KettoNum { get; set; }     // 血統登録番号（馬の一意キー）
+        [JsonIgnore] public string JockeyCode { get; set; }   // 騎手コード
+        [JsonIgnore] public string TrainerCode { get; set; }  // 調教師コード
     }
 
     /// <summary>確定後に取得する着順結果1頭分。添付画像の「結果・払戻」テーブル相当。</summary>

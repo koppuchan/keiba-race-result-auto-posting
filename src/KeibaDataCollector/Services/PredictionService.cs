@@ -33,6 +33,11 @@ namespace KeibaDataCollector.Services
     /// 発売開始が競馬場ごとに違うため（実測 2026-08-11: 10時台に盛岡・笠松は全レース揃う一方、
     /// 浦和・門別・金沢は12:30時点で0件）、このモードは開催時間中ずっと繰り返し実行し、
     /// 発売が始まったレースから順に埋めていく前提で作られている。
+    ///
+    /// 【発売前スコア】上の制約で、発売開始の遅い競馬場は締切直前まで印が出なかった。
+    /// そこでオッズを使わず過去データだけで付ける印（Scoring.PreSaleScorer）を用意した。
+    /// 設定 PredictionMethod が score ならその印を9時の時点で公開し、計算できなかったレースだけ
+    /// 従来どおりオッズの人気順で付ける。shadow なら公開はオッズの人気順のまま、比較をログに出す。
     /// </summary>
     public class PredictionService
     {
@@ -54,14 +59,33 @@ namespace KeibaDataCollector.Services
         private readonly Action _initialize;
         private bool _initialized;
 
-        public PredictionService(IRaceDataSource source, WordPressClient wp,
-            Func<RaceKey, bool> ownsRace = null, Action initialize = null)
+        // 発売前スコアで付けた印（レースキー → 印）。オッズを使わず、過去データだけで朝のうちに計算してある
+        // （Scoring.PreSaleScorer）。_publishPreSale が true ならこちらを公開し、false なら比較のログだけ出す。
+        private readonly IReadOnlyDictionary<string, Scoring.ScoredRace> _preSale;
+        private readonly bool _publishPreSale;
+
+        internal PredictionService(IRaceDataSource source, WordPressClient wp,
+            Func<RaceKey, bool> ownsRace = null, Action initialize = null,
+            IReadOnlyDictionary<string, Scoring.ScoredRace> preSale = null, bool publishPreSale = false)
         {
             _source = source;
             _wp = wp;
             _ownsRace = ownsRace;
             _initialize = initialize;
+            _preSale = preSale;
+            _publishPreSale = publishPreSale;
         }
+
+        /// <summary>発売前スコアの印（印が揃っているときだけ）。無ければ null。</summary>
+        private Dictionary<int, string> PreSaleMarksFor(RaceKey race)
+        {
+            if (_preSale == null || !_preSale.TryGetValue(race.AsSlug(), out var scored) || scored.Skipped != null)
+                return null;
+            var marks = scored.Marks();
+            return marks.Count >= Marks.Length ? marks : null;
+        }
+
+        private bool NeedsOdds(RaceKey race) => !_publishPreSale || PreSaleMarksFor(race) == null;
 
         private bool Owns(RaceKey key) => _ownsRace == null || _ownsRace(key);
 
@@ -133,9 +157,11 @@ namespace KeibaDataCollector.Services
                 $"[{_source.SourceName}] {targetDate:yyyy-MM-dd} 予想対象レース: {races.Count}件" +
                 (fromSite ? $"（サイトの一覧から。予想済み{already}件）" : "（提供元の一覧から）"));
 
-            int published = 0, notOnSale = 0, oddsError = 0, failed = 0, afterPost = 0;
-            // 発走前のレースが1件でもあるときだけデータ源を開く（夜など、残りが発走済みだけなら開かない）。
-            if (races.Any(r => !r.PostDateTime.HasValue || DateTime.Now < r.PostDateTime.Value)) EnsureInitialized();
+            int published = 0, notOnSale = 0, oddsError = 0, failed = 0, afterPost = 0, byScore = 0;
+            // オッズを取りに行く発走前のレースが1件でもあるときだけデータ源を開く
+            // （夜など、残りが発走済みだけのときや、発売前スコアで全レースに印が付くときは開かない）。
+            if (races.Any(r => NeedsOdds(r) && (!r.PostDateTime.HasValue || DateTime.Now < r.PostDateTime.Value)))
+                EnsureInitialized();
 
             foreach (var race in races)
             {
@@ -165,7 +191,9 @@ namespace KeibaDataCollector.Services
                         continue;
                     }
 
-                    var marks = BuildMarks(race);
+                    var preSale = PreSaleMarksFor(race);
+                    var fromScore = _publishPreSale && preSale != null;
+                    var marks = fromScore ? preSale : BuildMarks(race);
                     if (marks.Count == 0)
                     {
                         // JV-Linkインターフェース仕様書 p.54 のコード表より、
@@ -195,10 +223,11 @@ namespace KeibaDataCollector.Services
                     }
 
                     published++;
+                    if (fromScore) byScore++;
                     Console.WriteLine(
-                        $"[{_source.SourceName}] {race.AsSlug()} 予想を反映（" +
-                        string.Join(" ", marks.OrderBy(m => Array.IndexOf(Marks, m.Value))
-                                              .Select(m => $"{m.Value}{m.Key}")) + "）");
+                        $"[{_source.SourceName}] {race.AsSlug()} 予想を反映（{FormatMarks(marks)}" +
+                        (fromScore ? "、発売前スコア" : "") + "）" +
+                        (!fromScore && preSale != null ? $" 発売前スコアなら {FormatMarks(preSale)}（{Compare(preSale, marks)}）" : ""));
                 }
                 catch (Exception ex)
                 {
@@ -211,7 +240,8 @@ namespace KeibaDataCollector.Services
             // 所要時間も出す。繰り返し間隔より長くなると、次の回が多重起動禁止で弾かれ、
             // オッズ公開から反映までの遅れがそのまま伸びる。調整の判断材料として必ず残す。
             Console.WriteLine(
-                $"[{_source.SourceName}] 予想の反映完了: 新規{published}件 / 反映済み{already}件 / " +
+                $"[{_source.SourceName}] 予想の反映完了: 新規{published}件" +
+                (byScore > 0 ? $"（うち発売前スコア{byScore}件）" : "") + $" / 反映済み{already}件 / " +
                 $"発売前{notOnSale}件 / 発走済み{afterPost}件 / オッズ取得エラー{oddsError}件 / 反映失敗{failed}件 " +
                 $"（所要 {(DateTime.Now - started).TotalMinutes:0.0}分）");
 
@@ -229,6 +259,17 @@ namespace KeibaDataCollector.Services
                     $"{_source.SourceName} 予想が1件もありません" +
                     $"（対象{races.Count}件、発売前{notOnSale}件、オッズ取得エラー{oddsError}件）。");
             }
+        }
+
+        private static string FormatMarks(Dictionary<int, string> marks) =>
+            string.Join(" ", marks.OrderBy(m => Array.IndexOf(Marks, m.Value)).Select(m => $"{m.Value}{m.Key}"));
+
+        /// <summary>並行稼働中の比較用。発売前スコアの印が、オッズの人気順の印とどれだけ合っているか。</summary>
+        private static string Compare(Dictionary<int, string> preSale, Dictionary<int, string> odds)
+        {
+            var honmei = preSale.FirstOrDefault(m => m.Value == Marks[0]).Key == odds.FirstOrDefault(m => m.Value == Marks[0]).Key;
+            var overlap = preSale.Keys.Intersect(odds.Keys).Count();
+            return $"◎{(honmei ? "一致" : "不一致")}・印の重なり{overlap}/{Marks.Length}";
         }
 
         /// <summary>

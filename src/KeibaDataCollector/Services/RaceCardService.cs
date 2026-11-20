@@ -52,6 +52,8 @@ namespace KeibaDataCollector.Services
             var raceKeys = new Dictionary<string, RaceKey>();
             // 当日の発走時刻（RAレコードから）。結果の確認や予想を発走時刻で絞り込むために保存する。
             var postTimes = new Dictionary<string, RaceKey>();
+            // 当日のレース条件（距離・トラックコード）。発売前スコアの集計条件に使う。
+            var conditions = new Dictionary<string, (int Distance, string TrackSurfaceCode)>();
 
             int totalRecords = 0;
             int seRecords = 0;
@@ -88,6 +90,10 @@ namespace KeibaDataCollector.Services
                             var (raKey, _) = JvRecordParser.ParseCornerPassage(buffer);
                             if (raKey.RaceDate.Date == targetDate.Date && raKey.PostTime.HasValue)
                                 postTimes[raKey.AsSlug()] = raKey;
+
+                            var (condKey, distance, trackSurfaceCode) = JvRecordParser.ParseRaceConditions(buffer);
+                            if (condKey.RaceDate.Date == targetDate.Date)
+                                conditions[condKey.AsSlug()] = (distance, trackSurfaceCode);
                         }
                         catch (Exception ex)
                         {
@@ -138,6 +144,9 @@ namespace KeibaDataCollector.Services
 
             PostTimeStore.Merge(targetDate, postTimes.Values);
             Console.WriteLine($"[{_source.SourceName}] 発走時刻を保存: {postTimes.Count}レース");
+
+            // 発売前スコア（予想印）の算出用に、出走馬の血統登録番号・騎手・調教師コードを保存する。
+            Scoring.RaceEntriesStore.Merge(targetDate, entriesByRace, conditions);
 
             // 取得内容の内訳。データが届いているか／対象日の絞り込みが効いているかを
             // 運用時に確認できるよう、通常ログとして残す。
