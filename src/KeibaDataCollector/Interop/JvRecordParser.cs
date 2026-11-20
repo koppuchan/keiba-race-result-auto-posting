@@ -74,6 +74,9 @@ namespace KeibaDataCollector.Interop
                 Kinryo = SafeTenths(se.Futan),
                 JockeyName = Trim(se.KisyuRyakusyo),
                 TrainerName = Trim(se.ChokyosiRyakusyo),
+                KettoNum = Trim(se.KettoNum),
+                JockeyCode = Trim(se.KisyuCode),
+                TrainerCode = Trim(se.ChokyosiCode),
             };
 
             return (ExtractRaceKey(se.id), entry);
@@ -202,6 +205,18 @@ namespace KeibaDataCollector.Interop
             var key = ExtractRaceKey(ra.id);
             key.PostTime = ParsePostTime(ra.HassoTime);
             return (key, passage);
+        }
+
+        /// <summary>
+        /// RAレコードからレース条件（距離・トラックコード）を読む。
+        /// 発売前スコアで、枠順や父の成績を同じ条件（芝/ダート・距離）で集計するために使う。
+        /// </summary>
+        public static (RaceKey Key, int Distance, string TrackSurfaceCode) ParseRaceConditions(string rawRecord)
+        {
+            var ra = new JV_RA_RACE();
+            ra.SetDataB(ref rawRecord);
+            int.TryParse(Trim(ra.Kyori), out var distance);
+            return (ExtractRaceKey(ra.id), distance, Trim(ra.TrackCD));
         }
 
         /// <summary>データマイニング予想1レース分（DM: タイム型 / TM: 対戦型）。</summary>

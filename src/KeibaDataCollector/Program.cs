@@ -76,6 +76,10 @@ namespace KeibaDataCollector
                 case "catchup":
                     // 1レースあたり数秒。数日分でも数分で終わるので、1時間あれば十分。
                     return TimeSpan.FromHours(1);
+                case "calibrate":
+                case "score":
+                    // 過去データ（ローカルのSQLite）を読むだけ。実測で数分の見込み。
+                    return TimeSpan.FromHours(2);
                 default:
                     // setup（ダイアログ待ち）・probe（手動調査）・help は打ち切らない。
                     return null;
@@ -171,8 +175,14 @@ namespace KeibaDataCollector
                             AppConfig.WordPressUser,
                             AppConfig.WordPressAppPassword);
 
-                        RunPredictFor(jvLink, wp, k => k.IsJra);
-                        RunPredictFor(umaConn, wp, k => !k.IsJra);
+                        // 発売前スコアの印。1日1回だけ計算し、以降はファイルを読むだけ（PreSaleScorer）。
+                        var method = AppConfig.PredictionMethod;
+                        var preSale = method == PredictionMethod.Odds ? null
+                            : Scoring.PreSaleScorer.EnsureForDate(DateTime.Today, AppConfig.KeibaAiHistoryDbPath);
+                        var publishPreSale = method == PredictionMethod.Score;
+
+                        RunPredictFor(jvLink, wp, k => k.IsJra, preSale, publishPreSale);
+                        RunPredictFor(umaConn, wp, k => !k.IsJra, preSale, publishPreSale);
                         break;
                     }
 
@@ -205,6 +215,16 @@ namespace KeibaDataCollector
                         if (probeKey == null || !probeKey.IsJra) RunProbeFor(umaConn, arg);
                         break;
 
+                    case "calibrate":
+                        // 発売前スコアの重みを過去データから求める。WordPressにも提供元にも繋がない。
+                        Scoring.ScoringCommands.Calibrate(AppConfig.KeibaAiHistoryDbPath, DateTime.Today);
+                        break;
+
+                    case "score":
+                        // 発売前スコアの印を表示する（確認用。WordPressには書き込まない）。
+                        Scoring.ScoringCommands.Score(AppConfig.KeibaAiHistoryDbPath, arg);
+                        break;
+
                     case "setup":
                         // 初回1回だけ手動実行: 利用キー入力ダイアログを開いて設定を保存する。
                         // 片方のProgIDが未確認/未登録でもう片方の結果が分からなくなるのを避けるため、
@@ -214,7 +234,7 @@ namespace KeibaDataCollector
                         break;
 
                     default:
-                        Console.WriteLine("使い方: KeibaDataCollector.exe [setup|morning|predict|watch|catchup|probe]");
+                        Console.WriteLine("使い方: KeibaDataCollector.exe [setup|morning|predict|watch|catchup|probe|calibrate|score]");
                         Console.WriteLine("  setup   : 初回のみ。利用キー等をGUIダイアログで設定する。");
                         Console.WriteLine("  morning : 朝一バッチ。当日の出走表を取得しWordPressへ反映する。");
                         Console.WriteLine("  predict : 朝一オッズの人気順から予想印を生成しWordPressへ反映する。");
@@ -223,6 +243,8 @@ namespace KeibaDataCollector
                         Console.WriteLine("            例: catchup 2026-10-05 2026-10-06 / catchup today / catchup recent（当日から7日分）");
                         Console.WriteLine("  probe   : 調査用。どのデータ種別で何が取得できるか確認する（WordPressへは書き込まない）。");
                         Console.WriteLine("            レースを指定する場合: probe 20260811-46-1R");
+                        Console.WriteLine("  calibrate : 発売前スコアの重みを過去1年のレースで求めて保存する（WordPressへは書き込まない）。");
+                        Console.WriteLine("  score     : 発売前スコアの印を表示する。例: score / score 2026-11-15 / score 20261115-05-11R");
                         break;
                 }
             }
@@ -285,12 +307,14 @@ namespace KeibaDataCollector
         }
 
         private static void RunPredictFor(
-            JvSpecComDataSource source, WordPress.WordPressClient wp, Func<Models.RaceKey, bool> ownsRace)
+            JvSpecComDataSource source, WordPress.WordPressClient wp, Func<Models.RaceKey, bool> ownsRace,
+            System.Collections.Generic.IReadOnlyDictionary<string, Scoring.ScoredRace> preSale, bool publishPreSale)
         {
             try
             {
                 // 初期化は対象レースがあるときだけ行う（PredictionService._initialize 参照）。
-                new PredictionService(source, wp, ownsRace, () => source.Initialize(AppConfig.JvLinkSoftwareId))
+                new PredictionService(source, wp, ownsRace, () => source.Initialize(AppConfig.JvLinkSoftwareId),
+                        preSale, publishPreSale)
                     .RunAsync(DateTime.Today, CancellationToken.None)
                     .GetAwaiter().GetResult();
             }
