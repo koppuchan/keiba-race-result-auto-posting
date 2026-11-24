@@ -50,8 +50,8 @@ namespace KeibaDataCollector.Scoring
             public double Last4F;       // 4ハロン合計（秒）。無ければ NaN
         }
 
-        // 走破タイム・馬場状態は、先方に列の追加を依頼している（2026-11 時点では未追加）。
-        // 列があれば読み、無ければタイム指数を使わずに続ける。
+        // 走破タイム・馬場状態は、先方に列を追加してもらった（2026-11-24）。
+        // 列があれば読み、無ければ（古いDBなど）タイム指数を使わずに続ける。
         private const string FinishTimeColumn = "soha_time";
         private const string GoingColumn = "baba_code";
 
@@ -220,8 +220,9 @@ namespace KeibaDataCollector.Scoring
             using (var cmd = new SQLiteCommand(
                 "SELECT CASE WHEN CAST(track_code AS INTEGER) BETWEEN 1 AND 10 THEN '中央' ELSE '地方' END AS grp, " +
                 "COUNT(*), SUM(race_number IS NOT NULL AND race_number > 0), SUM(tansho_odds IS NOT NULL AND tansho_odds > 0), " +
-                "SUM(agari_3f IS NOT NULL AND agari_3f > 0), MIN(race_date), MAX(race_date) " +
-                "FROM race_entries WHERE race_date >= @from AND race_date < @to GROUP BY grp;", _conn))
+                "SUM(agari_3f IS NOT NULL AND agari_3f > 0), MIN(race_date), MAX(race_date)" +
+                (HasFinishTime ? $", SUM({FinishTimeColumn} IS NOT NULL AND {FinishTimeColumn} > 0), SUM({GoingColumn} IS NOT NULL)" : "") +
+                " FROM race_entries WHERE race_date >= @from AND race_date < @to GROUP BY grp;", _conn))
             {
                 cmd.Parameters.AddWithValue("@from", from.ToString("yyyy-MM-dd"));
                 cmd.Parameters.AddWithValue("@to", toExclusive.ToString("yyyy-MM-dd"));
@@ -231,15 +232,17 @@ namespace KeibaDataCollector.Scoring
                     {
                         var total = Convert.ToDouble(r.GetValue(1));
                         string Pct(int i) => total > 0 ? $"{Convert.ToDouble(r.GetValue(i)) / total:P0}" : "-";
+                        // 期間の区切りは「～」(U+FF5E)。「〜」(U+301C) は Windows の画面（CP932）では「?」になる。
                         lines.Add(
-                            $"{r.GetString(0)}: {total:N0}件（{Text(r, 5)}〜{Text(r, 6)}） " +
-                            $"レース番号あり {Pct(2)} / 確定オッズあり {Pct(3)} / 上がり3Fあり {Pct(4)}");
+                            $"{r.GetString(0)}: {total:N0}件（{Text(r, 5)}～{Text(r, 6)}） " +
+                            $"レース番号あり {Pct(2)} / 確定オッズあり {Pct(3)} / 上がり3Fあり {Pct(4)}" +
+                            (HasFinishTime ? $" / 走破タイムあり {Pct(7)} / 馬場状態あり {Pct(8)}" : ""));
                     }
                 }
             }
             lines.Add(HasFinishTime
                 ? "走破タイム・馬場状態: あり（タイム指数を使います）"
-                : "走破タイム・馬場状態: なし（タイム指数は使いません。keiba-ai-data-system 側で列の追加待ち）");
+                : "走破タイム・馬場状態: なし（タイム指数は使いません。keiba-ai-data-system の race_entries に soha_time・baba_code の列が必要）");
             return lines;
         }
 

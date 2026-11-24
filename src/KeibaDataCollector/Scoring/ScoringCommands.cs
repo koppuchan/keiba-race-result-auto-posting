@@ -15,6 +15,8 @@ namespace KeibaDataCollector.Scoring
         // 最後の4週間は重みを求めるのに使わず、当て具合の確認だけに使う
         // （求めるのに使ったレースで測ると、実際より良く見えるため）。
         private const int TestDays = 28;
+        // 過去データの最初の半年のレースは、重みを求めるのに使わない（Calibrate 内のコメント参照）。
+        private const int WarmUpDays = 180;
 
         public static void Calibrate(string dbPath, DateTime today)
         {
@@ -32,6 +34,10 @@ namespace KeibaDataCollector.Scoring
                 Console.WriteLine($"  出走 {runs.Count:N0}件 / 調教 {trainings.Count:N0}件 / 父が分かる馬 {sires.Count:N0}頭 " +
                                   $"（{(DateTime.Now - started).TotalSeconds:0}秒）");
 
+                // 区分（中央・地方・ばんえい）ごとの、過去データの最初の日。
+                var firstDay = runs.GroupBy(r => ScoreWeights.GroupOf(r.TrackCode))
+                                   .ToDictionary(g => g.Key, g => g.Min(r => r.Day));
+
                 var index = new HistoryIndex(runs, sires, trainings);
                 var samples = PreSaleScorer.PastRaceSamples(index, HistoryDb.DayOf(from), HistoryDb.DayOf(today));
                 Console.WriteLine($"  再現したレース {samples.Count:N0}件（{(DateTime.Now - started).TotalSeconds:0}秒）");
@@ -42,7 +48,12 @@ namespace KeibaDataCollector.Scoring
 
                 foreach (var group in new[] { ScoreWeights.Jra, ScoreWeights.Nar, ScoreWeights.Banei })
                 {
-                    var all = samples.Where(s => s.Group == group).ToList();
+                    // 過去データの最初の半年のレースは使わない。そのころのレースは、どの馬も前の成績が
+                    // ほとんど無い状態で再現され、「近1年の出走なし」などの重みが本番（1年分の成績がそろう）と
+                    // ずれてしまうため。中央は先方のデータが1年分しかない（3年分の取得は JRA-VAN の
+                    // ダイアログに手で答える必要があり、数時間かかる）ので、ここで避ける。
+                    var usableFrom = firstDay.TryGetValue(group, out var first) ? first + WarmUpDays : int.MinValue;
+                    var all = samples.Where(s => s.Group == group && s.Day >= usableFrom).ToList();
                     if (all.Count < 200)
                     {
                         Console.WriteLine($"[{GroupLabel(group)}] レースが少ないため調整しません（{all.Count}件）。");
@@ -63,10 +74,17 @@ namespace KeibaDataCollector.Scoring
                     Console.WriteLine();
                     Console.WriteLine($"[{GroupLabel(group)}] {(useMarket ? "確定オッズの人気" : "着順（確定オッズが無いため）")}に合わせて調整 " +
                                       $"（調整 {train.Count:N0}レース / 確認 {test.Count:N0}レース）");
+                    if (usableFrom > HistoryDb.DayOf(from))
+                        Console.WriteLine($"  {HistoryDb.DateOf(usableFrom):yyyy-MM-dd} 以降のレースを使用" +
+                                          "（過去データの最初の半年は、前の成績がそろっていないため使いません）");
                     if (test.Count > 0)
                     {
                         Console.WriteLine($"  調整前: {ScoreModel.DescribeMetrics(ScoreModel.Evaluate(test, before))}");
                         Console.WriteLine($"  調整後: {ScoreModel.DescribeMetrics(ScoreModel.Evaluate(test, weights))}");
+                    }
+                    else
+                    {
+                        Console.WriteLine("  確認用の直近4週間にレースが無いため、当て具合は出せません。");
                     }
                     var metrics = test.Count > 0 ? ScoreModel.Evaluate(test, weights) : new Dictionary<string, double>();
 
