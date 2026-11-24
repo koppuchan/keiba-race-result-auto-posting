@@ -89,6 +89,13 @@ namespace KeibaDataCollector.Scoring
         {
             var stored = LoadStored(date);
             var entries = RaceEntriesStore.Load(date);
+            if (entries.Count == 0)
+            {
+                // 朝一バッチの前に入れ替えた日など。黙ってオッズの人気順に戻ると、比較が出ない理由が分からない。
+                Console.WriteLine($"当日の出走馬ファイル（entries-{date:yyyyMMdd}.json）が無いため、発売前スコアは計算しません" +
+                                  "（朝一バッチが保存します。予想はオッズの人気順で続行）。");
+                return stored;
+            }
             var missing = entries.Where(e => !stored.ContainsKey(e.Key)).ToList();
             if (missing.Count == 0) return stored;
 

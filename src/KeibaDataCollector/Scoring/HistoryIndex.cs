@@ -185,7 +185,10 @@ namespace KeibaDataCollector.Scoring
 
         /// <summary>
         /// タイム指数: 走破タイムを、同じ競馬場・芝ダ・距離・馬場状態の平均と比べた値（標準偏差単位、速いほど大きい）。
-        /// 走破タイムと馬場状態は keiba-ai-data-system に列の追加を依頼中で、列が無いうちは全頭 NaN（使わない）。
+        /// 走破タイムと馬場状態は keiba-ai-data-system が持っている（2026-11-24 に列を追加してもらった）。
+        /// 列が無いDBでは全頭 NaN（使わない）。
+        /// 馬場状態が無いレース（ばんえい等。先方は NULL にしている）は、「馬場状態不明」として
+        /// それだけでまとめた平均と比べる。
         /// 平均は手元の全期間から取る（条件ごとの標準タイムは年単位でほぼ変わらないため）。
         /// </summary>
         private void ComputeTimeIndex()
@@ -194,8 +197,8 @@ namespace KeibaDataCollector.Scoring
             for (int i = 0; i < _runs.Count; i++)
             {
                 var r = _runs[i];
-                if (r.Chakujun <= 0 || double.IsNaN(r.FinishTime) || r.Going == null || r.Distance <= 0) continue;
-                var key = (r.TrackCode, SurfaceOf(r.TrackSurfaceCode), r.Distance, r.Going);
+                if (r.Chakujun <= 0 || double.IsNaN(r.FinishTime) || r.Distance <= 0) continue;
+                var key = (r.TrackCode, SurfaceOf(r.TrackSurfaceCode), r.Distance, r.Going ?? "");
                 if (!groups.TryGetValue(key, out var list)) groups[key] = list = new List<int>();
                 list.Add(i);
             }
