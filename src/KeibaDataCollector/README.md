@@ -59,6 +59,7 @@ KeibaDataCollector.exe watch    # レース確定監視→結果・払戻を随�
 KeibaDataCollector.exe probe    # 調査用: どのデータ種別で何が取れるか確認（WordPressへ書き込まない）
 KeibaDataCollector.exe calibrate  # 発売前スコアの重みを過去1年のレースで求める（WordPressへ書き込まない）
 KeibaDataCollector.exe score      # 発売前スコアの印を表示（例: score 2026-11-15 / score 20261115-05-11R）
+KeibaDataCollector.exe compare    # 公開した印と発売前スコアの印を、実際の人気・着順と比べる（省略時は前日）
 ```
 
 対話的に動かす場合は同名の `run-*.bat` から起動できます。
@@ -427,6 +428,13 @@ JRAデータマイニング値は、提供状況の確認（`probe`）が済ん�
   コードはサイトの投稿に載せないため、ここにだけ保存する
 - `score-marks-yyyyMMdd.json`: その日の発売前スコアの印。`predict` は5分ごとに動くが、計算は1日1回だけ
 - `scoring-weights.json`: calibrate で求めた重み
+
+### 並行稼働の比べ方（compare）
+
+`compare 2026-11-25` で、その日に公開した印（予想のログ `logs\predict-yyyyMMdd.log` から読む）と、
+発売前スコアの印を、確定オッズの人気・着順と突き合わせます。両方の印があり、結果も分かっているレースだけで比べます。
+人気・着順は過去データのDBから取るため、keiba-ai-data-system が取り込む翌朝（2:00以降）から比べられます。
+公開した印は「発売開始直後のオッズ」の人気順なので、最終的な人気とは少しずれます。
 
 ## ページキャッシュに注意（実際に障害になった）
 

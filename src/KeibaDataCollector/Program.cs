@@ -78,6 +78,7 @@ namespace KeibaDataCollector
                     return TimeSpan.FromHours(1);
                 case "calibrate":
                 case "score":
+                case "compare":
                     // 過去データ（ローカルのSQLite）を読むだけ。実測で数分の見込み。
                     return TimeSpan.FromHours(2);
                 default:
@@ -225,6 +226,11 @@ namespace KeibaDataCollector
                         Scoring.ScoringCommands.Score(AppConfig.KeibaAiHistoryDbPath, arg);
                         break;
 
+                    case "compare":
+                        // 並行稼働の比較（公開した印と発売前スコアを、実際の人気・着順と突き合わせる）。
+                        Scoring.ScoringCommands.Compare(AppConfig.KeibaAiHistoryDbPath, arg);
+                        break;
+
                     case "setup":
                         // 初回1回だけ手動実行: 利用キー入力ダイアログを開いて設定を保存する。
                         // 片方のProgIDが未確認/未登録でもう片方の結果が分からなくなるのを避けるため、
@@ -234,7 +240,7 @@ namespace KeibaDataCollector
                         break;
 
                     default:
-                        Console.WriteLine("使い方: KeibaDataCollector.exe [setup|morning|predict|watch|catchup|probe|calibrate|score]");
+                        Console.WriteLine("使い方: KeibaDataCollector.exe [setup|morning|predict|watch|catchup|probe|calibrate|score|compare]");
                         Console.WriteLine("  setup   : 初回のみ。利用キー等をGUIダイアログで設定する。");
                         Console.WriteLine("  morning : 朝一バッチ。当日の出走表を取得しWordPressへ反映する。");
                         Console.WriteLine("  predict : 朝一オッズの人気順から予想印を生成しWordPressへ反映する。");
@@ -245,6 +251,7 @@ namespace KeibaDataCollector
                         Console.WriteLine("            レースを指定する場合: probe 20260811-46-1R");
                         Console.WriteLine("  calibrate : 発売前スコアの重みを過去1年のレースで求めて保存する（WordPressへは書き込まない）。");
                         Console.WriteLine("  score     : 発売前スコアの印を表示する。例: score / score 2026-11-15 / score 20261115-05-11R");
+                        Console.WriteLine("  compare   : 公開した印と発売前スコアの印を、実際の人気・着順と比べる。例: compare（前日）/ compare 2026-11-25");
                         break;
                 }
             }
