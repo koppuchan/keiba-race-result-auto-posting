@@ -27,6 +27,9 @@ namespace KeibaDataCollector.Scoring
         public string HorseName { get; set; }
         public double Score { get; set; }
         public string Mark { get; set; }
+
+        /// <summary>点数に効いた要素の上位（score コマンドの表示用。ファイルには保存しない）。</summary>
+        [JsonIgnore] public string Reasons { get; set; }
     }
 
     /// <summary>
@@ -171,6 +174,7 @@ namespace KeibaDataCollector.Scoring
                     Umaban = runners[i].Umaban,
                     HorseName = runners[i].HorseName,
                     Score = Math.Round(ScoreModel.Score(x[i], w), 4),
+                    Reasons = DescribeReasons(raw[i], x[i], w),
                 });
             }
 
@@ -189,6 +193,22 @@ namespace KeibaDataCollector.Scoring
             var ranked = result.Runners.OrderByDescending(r => r.Score).ThenBy(r => r.Umaban).ToList();
             for (int i = 0; i < Marks.Length; i++) ranked[i].Mark = Marks[i];
             return result;
+        }
+
+        /// <summary>
+        /// 点数に効いた要素の上位3つ（例: 「タイム指数+0.52 近3走の着順+0.31 騎手複勝率-0.20」）。
+        /// 点数はレース内の平均を0とした値なので、+ は平均より上、- は下に効いたことを表す。
+        /// </summary>
+        private static string DescribeReasons(double[] raw, double[] x, double[] w)
+        {
+            var top = Enumerable.Range(0, w.Length)
+                .Select(j => (Label: Factors.Labels[j], Value: w[j] * x[j]))
+                .Where(c => Math.Abs(c.Value) >= 0.005)
+                .OrderByDescending(c => Math.Abs(c.Value))
+                .Take(3)
+                .Select(c => $"{c.Label}{c.Value:+0.00;-0.00}");
+            var text = string.Join(" ", top);
+            return raw[Factors.NoRecentRuns] == 1 ? "（近1年の出走記録なし） " + text : text;
         }
 
         /// <summary>

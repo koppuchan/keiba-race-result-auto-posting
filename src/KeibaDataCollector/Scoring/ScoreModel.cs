@@ -244,46 +244,77 @@ namespace KeibaDataCollector.Scoring
         ///     印4頭と人気上位4頭の重なり、スコア順と人気順の順位相関
         ///   着順だけのレース: ◎の勝率・複勝率、印の馬が3着以内の割合
         /// </summary>
-        public static Dictionary<string, double> Evaluate(IList<RaceSample> samples, double[] w)
+        public static Dictionary<string, double> Evaluate(IList<RaceSample> samples, double[] w) =>
+            EvaluateMarks(samples.Select(s =>
+            {
+                var ranking = Ranking(s, w);
+                return new MarkedRace
+                {
+                    Marked = ranking.Take(4).ToList(),
+                    FullRanking = ranking,
+                    Popularity = s.MarketProb == null ? null
+                        : Enumerable.Range(0, s.X.Length).OrderByDescending(i => s.MarketProb[i]).ThenBy(i => i).ToList(),
+                    Chakujun = Enumerable.Range(0, s.X.Length).ToDictionary(i => i, i => s.Chakujun[i]),
+                };
+            }).ToList());
+
+        /// <summary>1レース分の印と、実際の人気・着順（当て具合の集計用）。馬は馬番などの番号で表す。</summary>
+        public sealed class MarkedRace
         {
-            int market = 0, result = 0;
+            /// <summary>印の付いた馬（◎○▲△の順）。</summary>
+            public List<int> Marked;
+            /// <summary>全頭の順位（順位相関を出すときだけ。印しか分からない場合は null）。</summary>
+            public List<int> FullRanking;
+            /// <summary>確定オッズの人気順（無ければ null）。</summary>
+            public List<int> Popularity;
+            /// <summary>着順（0 = 着順なし）。</summary>
+            public Dictionary<int, int> Chakujun;
+        }
+
+        /// <summary>印の当て具合を集計する（Evaluate の説明を参照）。</summary>
+        public static Dictionary<string, double> EvaluateMarks(IList<MarkedRace> races)
+        {
+            int market = 0, result = 0, ranked = 0;
             double favTop = 0, marksInTop5 = 0, overlap4 = 0, spearman = 0;
             double favWin = 0, favTop3 = 0, marksInTop3 = 0;
 
-            foreach (var s in samples)
+            foreach (var r in races)
             {
-                var ranking = Ranking(s, w);
-                var marked = ranking.Take(4).ToList();
+                var marked = r.Marked;
+                if (marked.Count == 0) continue;
 
-                if (s.MarketProb != null)
+                if (r.Popularity != null && r.Popularity.Count > 0)
                 {
                     market++;
-                    var popularity = Enumerable.Range(0, s.X.Length).OrderByDescending(i => s.MarketProb[i]).ThenBy(i => i).ToList();
-                    if (marked[0] == popularity[0]) favTop++;
-                    var top5 = new HashSet<int>(popularity.Take(5));
+                    if (marked[0] == r.Popularity[0]) favTop++;
+                    var top5 = new HashSet<int>(r.Popularity.Take(5));
                     marksInTop5 += marked.Count(i => top5.Contains(i)) / (double) marked.Count;
-                    overlap4 += marked.Intersect(popularity.Take(4)).Count();
-                    spearman += Spearman(ranking, popularity);
+                    overlap4 += marked.Intersect(r.Popularity.Take(4)).Count();
+                    if (r.FullRanking != null && r.FullRanking.Count == r.Popularity.Count)
+                    {
+                        ranked++;
+                        spearman += Spearman(r.FullRanking, r.Popularity);
+                    }
                 }
 
-                if (s.Chakujun.Any(c => c > 0))
+                int Place(int i) => r.Chakujun != null && r.Chakujun.TryGetValue(i, out var c) ? c : 0;
+                if (r.Chakujun != null && r.Chakujun.Values.Any(c => c > 0))
                 {
                     result++;
-                    var fav = marked[0];
-                    if (s.Chakujun[fav] == 1) favWin++;
-                    if (s.Chakujun[fav] >= 1 && s.Chakujun[fav] <= 3) favTop3++;
-                    marksInTop3 += marked.Count(i => s.Chakujun[i] >= 1 && s.Chakujun[i] <= 3) / (double) marked.Count;
+                    if (Place(marked[0]) == 1) favWin++;
+                    if (Place(marked[0]) >= 1 && Place(marked[0]) <= 3) favTop3++;
+                    marksInTop3 += marked.Count(i => Place(i) >= 1 && Place(i) <= 3) / (double) marked.Count;
                 }
             }
 
-            var metrics = new Dictionary<string, double> { ["races"] = samples.Count };
+            var metrics = new Dictionary<string, double> { ["races"] = races.Count };
             if (market > 0)
             {
                 metrics["honmeiIsFavorite"] = Math.Round(favTop / market, 3);
                 metrics["marksInPopularTop5"] = Math.Round(marksInTop5 / market, 3);
                 metrics["overlapWithPopularTop4"] = Math.Round(overlap4 / market, 2);
-                metrics["spearmanWithPopularity"] = Math.Round(spearman / market, 3);
             }
+            if (ranked > 0) metrics["spearmanWithPopularity"] = Math.Round(spearman / ranked, 3);
             if (result > 0)
             {
                 metrics["honmeiWin"] = Math.Round(favWin / result, 3);

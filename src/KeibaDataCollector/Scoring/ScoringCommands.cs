@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using System.Text;
+using System.Text.RegularExpressions;
 
 namespace KeibaDataCollector.Scoring
 {
@@ -8,6 +11,7 @@ namespace KeibaDataCollector.Scoring
     /// 発売前スコアの手動コマンド（WordPressには書き込まない）。
     ///   calibrate : 過去1年のレースで重みを求め、data\scoring-weights.json に保存する。
     ///   score     : 指定日（またはレース）の印を計算して表示する。過去の日なら実際の人気・着順と並べる。
+    ///   compare   : 並行稼働の比較。公開した印と発売前スコアの印を、実際の人気・着順と突き合わせる。
     /// </summary>
     internal static class ScoringCommands
     {
@@ -140,7 +144,7 @@ namespace KeibaDataCollector.Scoring
                         Console.WriteLine($"{race.Key} {FormatMarks(scored.Marks())}");
                         if (onlySlug != null)
                             foreach (var r in scored.Runners.OrderByDescending(r => r.Score))
-                                Console.WriteLine($"   {r.Mark ?? "  "} {r.Umaban,2} {r.HorseName,-12} {r.Score,7:0.00}");
+                                Console.WriteLine($"   {r.Mark ?? "  "} {r.Umaban,2} {r.Score,6:0.00}  {r.HorseName}  {r.Reasons}");
                     }
                     return;
                 }
@@ -178,6 +182,122 @@ namespace KeibaDataCollector.Scoring
                     Console.WriteLine($"  [{GroupLabel(group.Key)}] " +
                                       ScoreModel.DescribeMetrics(ScoreModel.Evaluate(group.ToList(), weights.For(group.Key))));
             }
+        }
+
+        /// <summary>
+        /// compare [yyyy-MM-dd]（省略時は前日）
+        /// 並行稼働の比較。その日に公開した印（予想のログから）と、発売前スコアの印（score-marks ファイル）を、
+        /// 確定オッズの人気・着順と突き合わせる。人気・着順は過去データのDBから取る
+        /// （keiba-ai-data-system が毎晩2:00に取り込むので、前日分は翌朝から比べられる）。
+        /// 参考として、同じ日を過去データから再現した印（calibrate と同じ計算）も並べる。
+        /// </summary>
+        public static void Compare(string dbPath, string arg)
+        {
+            var date = DateTime.TryParse(arg, out var d) ? d.Date : DateTime.Today.AddDays(-1);
+            var weights = ScoreWeights.Load();
+            var preSale = PreSaleScorer.LoadStored(date);
+            var published = PublishedMarks(date);
+            Console.WriteLine($"{date:yyyy-MM-dd} の予想印の比較（公開した印 {published.Count}レース / 発売前スコア {preSale.Count(p => p.Value.Skipped == null)}レース）");
+
+            using (var db = new HistoryDb(dbPath))
+            {
+                var runs = db.LoadRuns(date.AddYears(-3), date.AddDays(1));
+                var day = HistoryDb.DayOf(date);
+
+                // 確定オッズの人気順と着順（馬番で表す）。結果がまだ取り込まれていないレースは除く。
+                var outcome = runs.Where(r => r.Day == day && r.RaceNumber > 0 && r.TrackCode != null)
+                    .GroupBy(r => $"{date:yyyyMMdd}-{r.TrackCode}-{r.RaceNumber}R")
+                    .Select(g => new
+                    {
+                        Slug = g.Key,
+                        Popularity = g.Where(r => !double.IsNaN(r.Odds)).OrderBy(r => r.Odds).ThenBy(r => r.Umaban)
+                                      .Select(r => r.Umaban).Distinct().ToList(),
+                        Chakujun = g.GroupBy(r => r.Umaban).ToDictionary(x => x.Key, x => x.First().Chakujun),
+                    })
+                    .Where(o => o.Popularity.Count > 0 || o.Chakujun.Values.Any(c => c > 0))
+                    .ToDictionary(o => o.Slug);
+
+                var history = new HistoryIndex(runs, db.LoadSires(runs.Select(r => r.KettoNum)),
+                    db.LoadTraining(date.AddDays(-15), date));
+                var replay = PreSaleScorer.PastRaceSamples(history, day, day + 1).ToDictionary(
+                    s => s.Slug, s => ScoreModel.Ranking(s, weights.For(s.Group)).Take(4).Select(i => s.Umaban[i]).ToList());
+
+                // 公開した印と発売前スコアの両方があり、結果も分かっているレースだけで比べる（同じレースで比べないと公平でない）。
+                var common = outcome.Keys
+                    .Where(k => published.ContainsKey(k) && preSale.TryGetValue(k, out var p) && p.Skipped == null)
+                    .OrderBy(k => k).ToList();
+                if (common.Count == 0)
+                {
+                    if (outcome.Count == 0)
+                        Console.WriteLine("この日の結果がまだ過去データにありません（keiba-ai-data-system が毎晩2:00に取り込みます）。");
+                    else if (preSale.Count == 0)
+                        Console.WriteLine($"この日の発売前スコアのファイル（score-marks-{date:yyyyMMdd}.json）がありません。");
+                    else
+                        Console.WriteLine($"比べられるレースがありません（結果が分かっているレース {outcome.Count}件）。");
+                    return;
+                }
+
+                ScoreModel.MarkedRace Marked(string slug, List<int> marks) => new ScoreModel.MarkedRace
+                {
+                    Marked = marks,
+                    Popularity = outcome[slug].Popularity.Count > 0 ? outcome[slug].Popularity : null,
+                    Chakujun = outcome[slug].Chakujun,
+                };
+                List<int> PreSaleList(string slug) => preSale[slug].Marks()
+                    .OrderBy(m => Array.IndexOf(PreSaleScorer.Marks, m.Value)).Select(m => m.Key).ToList();
+
+                foreach (var group in common.GroupBy(k => ScoreWeights.GroupOf(Models.RaceKey.TryParseSlug(k)?.TrackCode)))
+                {
+                    var slugs = group.ToList();
+                    var both = slugs.Count(k => published[k].FirstOrDefault() == PreSaleList(k).FirstOrDefault());
+                    var overlap = slugs.Average(k => published[k].Intersect(PreSaleList(k)).Count());
+                    Console.WriteLine();
+                    Console.WriteLine($"[{GroupLabel(group.Key)}] {slugs.Count}レース（◎が同じ {both}レース・印の重なり 平均{overlap:0.00}/4）");
+                    Console.WriteLine("  公開した印          : " + ScoreModel.DescribeMetrics(
+                        ScoreModel.EvaluateMarks(slugs.Select(k => Marked(k, published[k])).ToList())));
+                    Console.WriteLine("  発売前スコア        : " + ScoreModel.DescribeMetrics(
+                        ScoreModel.EvaluateMarks(slugs.Select(k => Marked(k, PreSaleList(k))).ToList())));
+                    var replayed = slugs.Where(replay.ContainsKey).ToList();
+                    if (replayed.Count > 0)
+                        Console.WriteLine("  参考: 過去データで再現: " + ScoreModel.DescribeMetrics(
+                            ScoreModel.EvaluateMarks(replayed.Select(k => Marked(k, replay[k])).ToList())));
+                }
+            }
+        }
+
+        /// <summary>
+        /// その日に公開した印（予想のログの「予想を反映（◎8 ○1 ▲9 △6）」の行から）。レースキー → 馬番（◎○▲△の順）。
+        /// ログは scheduled-predict.bat が logs\predict-yyyyMMdd.log に UTF-8 で書いている。
+        /// </summary>
+        private static Dictionary<string, List<int>> PublishedMarks(DateTime date)
+        {
+            var name = $"predict-{date:yyyyMMdd}.log";
+            var path = new[]
+            {
+                Path.Combine(Directory.GetCurrentDirectory(), "logs", name),
+                // exe は bin\Debug\net48 にあり、ログはその3つ上（scheduled-predict.bat と同じ場所）。
+                Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "logs", name)),
+            }.FirstOrDefault(File.Exists);
+
+            var result = new Dictionary<string, List<int>>();
+            if (path == null)
+            {
+                Console.WriteLine($"予想のログ（{name}）が見つかりません。公開した印とは比べられません。");
+                return result;
+            }
+
+            var line = new Regex(@"(\d{8}-\w+-\d+R) 予想を反映（([^）]*)）");
+            var mark = new Regex(@"([◎○▲△])(\d+)");
+            foreach (var text in File.ReadLines(path, Encoding.UTF8))
+            {
+                var m = line.Match(text);
+                if (!m.Success) continue;
+                var marks = mark.Matches(m.Groups[2].Value).Cast<Match>()
+                    .OrderBy(x => Array.IndexOf(PreSaleScorer.Marks, x.Groups[1].Value))
+                    .Select(x => int.Parse(x.Groups[2].Value)).ToList();
+                if (marks.Count > 0) result[m.Groups[1].Value] = marks;
+            }
+            return result;
         }
 
         private static RaceSample WithoutMarket(RaceSample s) => new RaceSample
