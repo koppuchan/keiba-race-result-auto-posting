@@ -180,7 +180,11 @@ namespace KeibaDataCollector
                         var method = AppConfig.PredictionMethod;
                         var preSale = method == PredictionMethod.Odds ? null
                             : Scoring.PreSaleScorer.EnsureForDate(DateTime.Today, AppConfig.KeibaAiHistoryDbPath);
-                        var publishPreSale = method == PredictionMethod.Score;
+                        // score のときも、公開するのは設定 PreSaleGroups の区分だけ（他はオッズの人気順で、比較のログを出す）。
+                        var groups = AppConfig.PreSaleGroups;
+                        Func<Models.RaceKey, bool> publishPreSale = method == PredictionMethod.Score
+                            ? k => groups.Contains(Scoring.ScoreWeights.GroupOf(k.TrackCode))
+                            : (Func<Models.RaceKey, bool>) null;
 
                         RunPredictFor(jvLink, wp, k => k.IsJra, preSale, publishPreSale);
                         RunPredictFor(umaConn, wp, k => !k.IsJra, preSale, publishPreSale);
@@ -315,7 +319,8 @@ namespace KeibaDataCollector
 
         private static void RunPredictFor(
             JvSpecComDataSource source, WordPress.WordPressClient wp, Func<Models.RaceKey, bool> ownsRace,
-            System.Collections.Generic.IReadOnlyDictionary<string, Scoring.ScoredRace> preSale, bool publishPreSale)
+            System.Collections.Generic.IReadOnlyDictionary<string, Scoring.ScoredRace> preSale,
+            Func<Models.RaceKey, bool> publishPreSale)
         {
             try
             {
