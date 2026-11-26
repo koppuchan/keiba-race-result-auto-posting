@@ -62,6 +62,8 @@ namespace KeibaDataCollector.Models
         [JsonIgnore] public string KettoNum { get; set; }     // 血統登録番号（馬の一意キー）
         [JsonIgnore] public string JockeyCode { get; set; }   // 騎手コード
         [JsonIgnore] public string TrainerCode { get; set; }  // 調教師コード
+        // 出走取消・発走除外・競走除外（異常区分コード 1〜3）。発売前スコアで印を付けないために使う。
+        [JsonIgnore] public bool Scratched { get; set; }
     }
 
     /// <summary>確定後に取得する着順結果1頭分。添付画像の「結果・払戻」テーブル相当。</summary>

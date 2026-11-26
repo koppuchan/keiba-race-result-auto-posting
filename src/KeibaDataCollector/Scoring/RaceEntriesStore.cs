@@ -34,6 +34,8 @@ namespace KeibaDataCollector.Scoring
             public string KettoNum { get; set; }
             public string JockeyCode { get; set; }
             public string TrainerCode { get; set; }
+            /// <summary>朝一の時点で出走取消・除外が分かっている馬。印を付けない。</summary>
+            public bool Scratched { get; set; }
         }
 
         private static string PathFor(DateTime date) =>
@@ -84,6 +86,7 @@ namespace KeibaDataCollector.Scoring
                             KettoNum = e.KettoNum,
                             JockeyCode = e.JockeyCode,
                             TrainerCode = e.TrainerCode,
+                            Scratched = e.Scratched,
                         });
                     }
                     all[pair.Key] = race;
