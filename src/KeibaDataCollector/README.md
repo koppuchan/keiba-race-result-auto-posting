@@ -63,6 +63,8 @@ KeibaDataCollector.exe compare    # 公開した印と発売前スコアの印�
 ```
 
 対話的に動かす場合は同名の `run-*.bat` から起動できます。
+`probe` など JV-Link/UmaConn を使うモードは、exe を直接起動すると `secrets.local.bat` が読まれず
+「設定値 'JvLinkSoftwareId' が未設定です」で止まります。`run-probe.bat 20261126-50-4R` のように bat から起動してください。
 
 ## 自動運用（タスクスケジューラ）
 
