@@ -318,7 +318,8 @@ namespace KeibaDataCollector.Services
             _siteHasAnyRaces = day.Count > 0;
             _siteHasOwnRaces = own.Count > 0;
 
-            var missing = own.Where(r => !r.Cancelled && !(r.HasResult && r.HasPayouts)).Select(r => r.Key).ToList();
+            // 結果が途中の段階（3着までなど）のままのレースも監視し直す（DayRace.IsPartialResult）。
+            var missing = own.Where(r => !r.Cancelled && !(r.HasCompleteResult && r.HasPayouts)).Select(r => r.Key).ToList();
             PostTimeStore.Apply(targetDate, missing);
             // 起動後に朝一バッチが発走時刻を保存した場合にも効くよう、監視中のレースにも当てはめる。
             PostTimeStore.Apply(targetDate, pending);

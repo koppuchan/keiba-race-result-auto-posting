@@ -3,10 +3,12 @@ using System.Collections.Generic;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using KeibaDataCollector.Models;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using Newtonsoft.Json.Serialization;
 
 namespace KeibaDataCollector.WordPress
@@ -226,6 +228,23 @@ namespace KeibaDataCollector.WordPress
             public bool HasPayouts;
             public int PredictionMarks;
             public bool Cancelled;
+            public int ResultHorses;  // 結果に載っている頭数（馬番で数える）
+            public int CardHorses;    // 出走表の頭数（馬番で数える）
+
+            /// <summary>
+            /// 結果が途中の段階のままか。
+            ///
+            /// 0B12 は「3着まで確定 → 5着まで確定 → 全馬着順確定」と段階的に届き、watch はその都度反映する。
+            /// 最後の段階を見届ける前に watch が入れ替わったり、catchup が途中の段階で反映したりすると、
+            /// 結果と払戻が揃っているため「済み」と扱われ、二度と取り直されなかった
+            /// （2026-11-18〜11-26 に、着順が3頭のまま残るレースが1日数件〜十数件。お客様のご指摘で判明）。
+            /// 着順が5頭以下で、出走表より少なければ途中の段階とみなして取り直す。
+            /// 取消があっても全馬確定なら頭数は出走表に近いので、5頭以下に限ればまず誤判定しない。
+            /// </summary>
+            public bool IsPartialResult => HasResult && ResultHorses <= 5 && ResultHorses < CardHorses;
+
+            /// <summary>全馬の着順まで揃った結果があるか。</summary>
+            public bool HasCompleteResult => HasResult && !IsPartialResult;
         }
 
         /// <summary>
@@ -275,6 +294,8 @@ namespace KeibaDataCollector.WordPress
                         HasPayouts = HasContent(meta.Payouts),
                         PredictionMarks = CountPredictionMarks(meta.Predictions),
                         Cancelled = meta.RaceStatus == "cancelled",
+                        ResultHorses = CountHorses(meta.RaceResult),
+                        CardHorses = CountHorses(meta.RaceCard),
                     });
                 }
 
@@ -293,7 +314,8 @@ namespace KeibaDataCollector.WordPress
             var missing = new List<RaceKey>();
             foreach (var race in await GetDayRacesAsync(date))
             {
-                if (race.Cancelled || (race.HasResult && race.HasPayouts)) continue;
+                // 結果が途中の段階（3着までなど）のままのレースも取り直す（DayRace.IsPartialResult）。
+                if (race.Cancelled || (race.HasCompleteResult && race.HasPayouts)) continue;
                 missing.Add(race.Key);
             }
             return missing;
@@ -320,6 +342,25 @@ namespace KeibaDataCollector.WordPress
                 HasRaceResult = HasContent(post.Meta?.RaceResult),
                 PredictionMarkCount = CountPredictionMarks(post.Meta?.Predictions),
             };
+        }
+
+        /// <summary>出走表・結果のJSON配列に載っている馬の数（馬番の種類で数える。同じ馬が二重に載っていても1頭）。</summary>
+        private static int CountHorses(string metaValue)
+        {
+            if (!HasContent(metaValue)) return 0;
+            try
+            {
+                return JArray.Parse(metaValue)
+                    .OfType<JObject>()
+                    .Select(o => (string) o["umaban"])
+                    .Where(u => !string.IsNullOrEmpty(u))
+                    .Distinct()
+                    .Count();
+            }
+            catch (JsonException)
+            {
+                return 0;
+            }
         }
 
         private static bool HasContent(string metaValue)
@@ -446,6 +487,9 @@ namespace KeibaDataCollector.WordPress
 
             [JsonProperty("race_result")]
             public string RaceResult { get; set; }
+
+            [JsonProperty("race_card")]
+            public string RaceCard { get; set; }
 
             [JsonProperty("payouts")]
             public string Payouts { get; set; }
