@@ -60,13 +60,14 @@ namespace KeibaDataCollector.Services
         private bool _initialized;
 
         // 発売前スコアで付けた印（レースキー → 印）。オッズを使わず、過去データだけで朝のうちに計算してある
-        // （Scoring.PreSaleScorer）。_publishPreSale が true ならこちらを公開し、false なら比較のログだけ出す。
+        // （Scoring.PreSaleScorer）。_publishPreSale が true を返すレースはこちらを公開し、
+        // それ以外（null のときは全レース）は比較のログだけ出す。区分（中央・地方・ばんえい）ごとに切り替えるため。
         private readonly IReadOnlyDictionary<string, Scoring.ScoredRace> _preSale;
-        private readonly bool _publishPreSale;
+        private readonly Func<RaceKey, bool> _publishPreSale;
 
         internal PredictionService(IRaceDataSource source, WordPressClient wp,
             Func<RaceKey, bool> ownsRace = null, Action initialize = null,
-            IReadOnlyDictionary<string, Scoring.ScoredRace> preSale = null, bool publishPreSale = false)
+            IReadOnlyDictionary<string, Scoring.ScoredRace> preSale = null, Func<RaceKey, bool> publishPreSale = null)
         {
             _source = source;
             _wp = wp;
@@ -85,7 +86,9 @@ namespace KeibaDataCollector.Services
             return marks.Count >= Marks.Length ? marks : null;
         }
 
-        private bool NeedsOdds(RaceKey race) => !_publishPreSale || PreSaleMarksFor(race) == null;
+        private bool PublishesPreSale(RaceKey race) => _publishPreSale != null && _publishPreSale(race);
+
+        private bool NeedsOdds(RaceKey race) => !PublishesPreSale(race) || PreSaleMarksFor(race) == null;
 
         private bool Owns(RaceKey key) => _ownsRace == null || _ownsRace(key);
 
@@ -192,7 +195,7 @@ namespace KeibaDataCollector.Services
                     }
 
                     var preSale = PreSaleMarksFor(race);
-                    var fromScore = _publishPreSale && preSale != null;
+                    var fromScore = PublishesPreSale(race) && preSale != null;
                     var marks = fromScore ? preSale : BuildMarks(race);
                     if (marks.Count == 0)
                     {

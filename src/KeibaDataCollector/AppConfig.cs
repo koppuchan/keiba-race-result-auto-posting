@@ -1,5 +1,6 @@
 using System;
 using System.Configuration;
+using System.Linq;
 
 namespace KeibaDataCollector
 {
@@ -42,6 +43,15 @@ namespace KeibaDataCollector
                 }
             }
         }
+
+        /// <summary>
+        /// PredictionMethod が score のとき、発売前スコアの印を公開する区分（jra / nar / banei のカンマ区切り）。
+        /// 区分ごとに精度を確かめてから切り替えるため（例: 地方だけ先に切り替え、中央・ばんえいはオッズの人気順のまま）。
+        /// </summary>
+        public static System.Collections.Generic.HashSet<string> PreSaleGroups =>
+            new System.Collections.Generic.HashSet<string>(
+                GetOptional("PreSaleGroups", "jra,nar,banei").Split(',')
+                    .Select(g => g.Trim().ToLowerInvariant()).Where(g => g.Length > 0));
 
         private static string GetOptional(string key, string fallback)
         {
