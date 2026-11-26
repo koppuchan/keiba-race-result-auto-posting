@@ -147,6 +147,7 @@ namespace KeibaDataCollector.Scoring
             var runners = (race.Runners ?? new List<RaceEntriesStore.Runner>())
                 .Where(r => r.Umaban > 0)
                 .GroupBy(r => r.Umaban).Select(g => g.Last()) // 同じ馬番が二重に届いた場合は後のもの
+                .Where(r => !r.Scratched) // 朝一の時点で取消・除外が分かっている馬には印を付けない
                 .OrderBy(r => r.Umaban)
                 .ToList();
 

@@ -77,9 +77,20 @@ namespace KeibaDataCollector.Interop
                 KettoNum = Trim(se.KettoNum),
                 JockeyCode = Trim(se.KisyuCode),
                 TrainerCode = Trim(se.ChokyosiCode),
+                Scratched = IsScratched(se.IJyoCD),
             };
 
             return (ExtractRaceKey(se.id), entry);
+        }
+
+        /// <summary>
+        /// 異常区分コード（JV-Data コード表 2101）が「走らない」ことを表すか。
+        /// 1 = 出走取消 / 2 = 発走除外 / 3 = 競走除外。0 = 異常なし、4 以降はレース中・レース後のもの。
+        /// </summary>
+        public static bool IsScratched(string ijyoCd)
+        {
+            var code = SafeInt(ijyoCd);
+            return code >= 1 && code <= 3;
         }
 
         /// <summary>"SE"レコード（馬毎レース情報、確定後）を着順結果としてパースする。
