@@ -134,6 +134,10 @@ namespace KeibaDataCollector.Services
                         entriesByRace[slug] = list;
                         raceKeys[slug] = raceKey;
                     }
+                    // 同じ馬のSEが二度届くことがある（騎手変更などの訂正）。後から届いたものが新しいので置き換える。
+                    // 足していくと出走表に同じ馬が2行ずつ並ぶ（2026-11-19・22・23・25 に発生）。
+                    // 馬番が決まる前（0）の行どうしは別の馬なので、まとめない。
+                    if (entry.Umaban > 0) list.RemoveAll(e => e.Umaban == entry.Umaban);
                     list.Add(entry);
                 }
             }
