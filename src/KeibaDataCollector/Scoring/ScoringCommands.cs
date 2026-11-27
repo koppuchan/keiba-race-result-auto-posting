@@ -21,6 +21,8 @@ namespace KeibaDataCollector.Scoring
         private const int TestDays = 28;
         // 過去データの最初の半年のレースは、重みを求めるのに使わない（Calibrate 内のコメント参照）。
         private const int WarmUpDays = 180;
+        // 新しい重みの当て具合が、今の重みよりこれ以上悪ければ置き換えない（例: 印が5番人気以内 86% → 83%）。
+        private const double WorseTolerance = 0.02;
 
         public static void Calibrate(string dbPath, DateTime today)
         {
@@ -91,6 +93,20 @@ namespace KeibaDataCollector.Scoring
                         Console.WriteLine("  確認用の直近4週間にレースが無いため、当て具合は出せません。");
                     }
                     var metrics = test.Count > 0 ? ScoreModel.Evaluate(test, weights) : new Dictionary<string, double>();
+
+                    // 毎週無人で実行するため（タスク KeibaDataCollector-Calibrate）、確認用の4週間で
+                    // 今の重みより当て具合が悪くなる区分は、今の重みのまま残す。過去データの取り込みが
+                    // 止まっていた週などに、おかしな重みへ置き換わって予想印が崩れるのを防ぐ。
+                    var measure = useMarket ? "marksInPopularTop5" : "marksInTop3";
+                    if (test.Count > 0 && current.Groups.TryGetValue(group, out var kept)
+                        && ScoreModel.Evaluate(test, before).TryGetValue(measure, out var beforeValue)
+                        && metrics.TryGetValue(measure, out var afterValue)
+                        && afterValue < beforeValue - WorseTolerance)
+                    {
+                        Console.WriteLine($"  新しい重みのほうが当て具合が悪いため（{beforeValue:P0} → {afterValue:P0}）、今の重みのまま残します。");
+                        fitted.Groups[group] = kept;
+                        continue;
+                    }
 
                     // 保存する重みは、確認用の4週間も含めた全期間で求め直したもの（最新の傾向を入れるため）。
                     weights = ScoreModel.Fit(target, weights, iterations: 150);

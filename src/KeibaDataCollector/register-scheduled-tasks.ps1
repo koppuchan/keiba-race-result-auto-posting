@@ -3,12 +3,14 @@
     KeibaDataCollector の朝一バッチ／確定監視をタスクスケジューラへ登録する。
 
 .DESCRIPTION
-    2つのタスクを作成します。
+    次のタスクを作成します。
 
       KeibaDataCollector-Morning : 毎日 -MorningTime に scheduled-morning.bat
       KeibaDataCollector-Predict : 毎日 -PredictTime に scheduled-predict.bat
       KeibaDataCollector-Watch   : 毎日 -WatchTime   に scheduled-watch.bat
       KeibaDataCollector-Catchup : 毎日 -CatchupTime から20分ごとに scheduled-catchup.bat
+      KeibaDataCollector-AutoDeploy : 毎日 -AutoDeployTime に autodeploy.ps1（新しい版があれば deploy.ps1）
+      KeibaDataCollector-Calibrate  : 毎週月曜 -CalibrateTime に scheduled-calibrate.bat（発売前スコアの重み）
 
     watch モードは監視の打ち切り時刻（23:30）まで動き続けます。-WatchTime から23:30まで
     10分ごとに起動を試み、止まっていた場合だけ起動し直します（動いている間は弾かれます）。
@@ -34,6 +36,14 @@
     取りこぼした結果の取り直しを始める時刻（HH:mm）。既定 10:00。
     最初のレースが終わる頃から、監視の打ち切り（23:30）まで20分ごとに実行します。
 
+.PARAMETER AutoDeployTime
+    夜間の自動更新の時刻（HH:mm）。既定 03:00。どのタスクも動いていない時間にする
+    （監視の打ち切り 23:30 より後、朝一バッチ 07:00 より前）。
+
+.PARAMETER CalibrateTime
+    発売前スコアの重みを求め直す時刻（毎週月曜、HH:mm）。既定 03:30。
+    keiba-ai-data-system の差分取り込み（毎日 2:00）より後にする。
+
 .PARAMETER RunOnlyWhenLoggedOn
     指定すると「ログオン時のみ実行」で登録します（既定）。
     JV-Link / UmaConn はダイアログを出すことがあり、非対話セッションだと
@@ -55,6 +65,8 @@ param(
     [string] $PredictTime = '09:00',
     [string] $WatchTime = '09:30',
     [string] $CatchupTime = '10:00',
+    [string] $AutoDeployTime = '03:00',
+    [string] $CalibrateTime = '03:30',
     [switch] $RunOnlyWhenLoggedOn = $true
 )
 
@@ -68,11 +80,13 @@ $morningBat = Join-Path $scriptDir 'scheduled-morning.bat'
 $predictBat = Join-Path $scriptDir 'scheduled-predict.bat'
 $watchBat = Join-Path $scriptDir 'scheduled-watch.bat'
 $catchupBat = Join-Path $scriptDir 'scheduled-catchup.bat'
+$calibrateBat = Join-Path $scriptDir 'scheduled-calibrate.bat'
+$autoDeployPs1 = Join-Path $scriptDir 'autodeploy.ps1'
 $exePath = Join-Path $scriptDir 'bin\Debug\net48\KeibaDataCollector.exe'
 $secrets = Join-Path $scriptDir 'secrets.local.bat'
 
 # --- 事前チェック ------------------------------------------------------------
-foreach ($required in @($morningBat, $predictBat, $watchBat, $catchupBat, $exePath)) {
+foreach ($required in @($morningBat, $predictBat, $watchBat, $catchupBat, $calibrateBat, $autoDeployPs1, $exePath)) {
     if (-not (Test-Path $required)) {
         throw "必要なファイルが見つかりません: $required`nビルド済みか確認してください（dotnet build -c Debug）。"
     }
@@ -95,11 +109,39 @@ function Register-KeibaTask {
         [string] $Description,
         # 指定すると、開始時刻から $RepeatFor の間、$RepeatEvery ごとに繰り返し実行する。
         [timespan] $RepeatEvery,
-        [timespan] $RepeatFor
+        [timespan] $RepeatFor,
+        # 指定すると毎日ではなく、その曜日だけ実行する（例: Monday）。
+        [string] $WeeklyOn,
+        # $BatPath に渡す引数（powershell.exe でスクリプトを起動する場合など）。
+        [string] $Arguments,
+        # 実行時間の上限。固まったまま残らないようにする。
+        [timespan] $TimeLimit = (New-TimeSpan -Hours 20),
+        # 実行中なら登録し直さない。自分自身を登録し直すと、その場で終了してしまうタスク用
+        # （AutoDeploy は deploy.ps1 → このスクリプトの順に呼ぶため、ここで自分を置き換えると
+        #   残りのタスクの登録の途中で終了し、登録が消えたままになる）。
+        [switch] $SkipIfRunning
     )
 
-    $action = New-ScheduledTaskAction -Execute $BatPath -WorkingDirectory $scriptDir
-    $trigger = New-ScheduledTaskTrigger -Daily -At $StartTime
+    if ($SkipIfRunning) {
+        $existingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+        if ($existingTask -and $existingTask.State -eq 'Running') {
+            Write-Output "実行中のため更新しません: $TaskName（次に手動で deploy.ps1 を実行したときに更新されます）"
+            return
+        }
+    }
+
+    if ($Arguments) {
+        $action = New-ScheduledTaskAction -Execute $BatPath -Argument $Arguments -WorkingDirectory $scriptDir
+    }
+    else {
+        $action = New-ScheduledTaskAction -Execute $BatPath -WorkingDirectory $scriptDir
+    }
+    if ($WeeklyOn) {
+        $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek $WeeklyOn -At $StartTime
+    }
+    else {
+        $trigger = New-ScheduledTaskTrigger -Daily -At $StartTime
+    }
 
     # 速報オッズは「対象レースの勝ち馬投票券発売以降」にしか提供されない
     # （JV-Data仕様書「（２）速報系データ」）。発売開始は競馬場ごとに違うため、
@@ -129,7 +171,7 @@ function Register-KeibaTask {
         -StartWhenAvailable `
         -DontStopIfGoingOnBatteries `
         -AllowStartIfOnBatteries `
-        -ExecutionTimeLimit (New-TimeSpan -Hours 20)
+        -ExecutionTimeLimit $TimeLimit
 
     if ($RunOnlyWhenLoggedOn) {
         # 対話セッションで実行。ダイアログが出た場合に気づける。
@@ -165,7 +207,7 @@ function Register-KeibaTask {
         Register-ScheduledTask -TaskName $TaskName -InputObject $task -User $cred.UserName -Password $cred.GetNetworkCredential().Password | Out-Null
     }
 
-    Write-Output "登録しました: $TaskName ($StartTime 毎日)"
+    Write-Output ("登録しました: $TaskName ($StartTime " + $(if ($WeeklyOn) { "毎週 $WeeklyOn" } else { "毎日" }) + ")")
 }
 
 Register-KeibaTask -TaskName 'KeibaDataCollector-Morning' -BatPath $morningBat -StartTime $MorningTime `
@@ -198,6 +240,21 @@ Register-KeibaTask -TaskName 'KeibaDataCollector-Watch' -BatPath $watchBat -Star
 Register-KeibaTask -TaskName 'KeibaDataCollector-Catchup' -BatPath $catchupBat -StartTime $CatchupTime `
     -Description 'watch が取りこぼした結果・払戻（当日から7日分）を20分ごとに取り直してWordPressへ反映する' `
     -RepeatEvery (New-TimeSpan -Minutes 20) -RepeatFor (New-TimeSpan -Hours 13 -Minutes 30)
+
+# 夜間の自動更新。GitHub の main に新しい版があるときだけ deploy.ps1 を実行する（autodeploy.ps1）。
+# 修正の反映を手作業に頼ると、反映し忘れた間は修正前の版が動き続けるため（2026-11-27 から）。
+# bat を挟まずに powershell.exe で直接起動する（git pull で bat が書き換わると、実行中の bat は誤動作する）。
+Register-KeibaTask -TaskName 'KeibaDataCollector-AutoDeploy' -BatPath 'powershell.exe' -StartTime $AutoDeployTime `
+    -Arguments "-NoProfile -ExecutionPolicy Bypass -File `"$autoDeployPs1`"" `
+    -Description 'GitHub の main に新しい版があれば deploy.ps1 で反映する（夜間の自動更新）' `
+    -TimeLimit (New-TimeSpan -Hours 1) -SkipIfRunning
+
+# 発売前スコアの重みを、過去1年のレースで毎週求め直す（calibrate）。
+# 新しい重みのほうが直近4週間の当て具合が悪い区分は、今の重みのまま残す。
+Register-KeibaTask -TaskName 'KeibaDataCollector-Calibrate' -BatPath $calibrateBat -StartTime $CalibrateTime `
+    -WeeklyOn 'Monday' `
+    -Description '発売前スコア（予想印）の重みを、過去データで毎週求め直す' `
+    -TimeLimit (New-TimeSpan -Hours 2)
 
 # 登録し直したことで停止したタスクを再開する。
 # ここを忘れると、日中に更新した日はその後のレースが反映されないまま終わる。
