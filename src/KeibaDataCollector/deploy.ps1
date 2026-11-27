@@ -38,10 +38,20 @@ $ErrorActionPreference = 'Stop'
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $scriptDir
 
-# 常駐・繰り返し実行されるタスク。停止したら最後に必ず戻す。
+# 常駐・繰り返し実行されるタスク。デプロイ前に動いていたものは、最後に必ず戻す。
 $RunningTasks = @('KeibaDataCollector-Watch', 'KeibaDataCollector-Predict')
-# Catchup は20分ごとに自分で起動するので、再開はしない（止めるのはビルド中にexeを掴まないため）。
-$AllTasks     = @('KeibaDataCollector-Morning', 'KeibaDataCollector-Catchup') + $RunningTasks
+# Catchup・Calibrate は自分のトリガーで起動するので、再開はしない（止めるのはビルド中にexeを掴まないため）。
+# AutoDeploy（このスクリプトを夜間に実行するタスク）は止めない。止めると自分自身が終了する。
+$AllTasks     = @('KeibaDataCollector-Morning', 'KeibaDataCollector-Catchup', 'KeibaDataCollector-Calibrate') + $RunningTasks
+
+# デプロイ前に動いていたタスク。再開はこれだけにする。
+# 以前は Watch / Predict を必ず起動していたが、夜間の自動デプロイ（03:00）でそれをすると、
+# その日のレースがまだサイトに無い時間に監視と予想が始まり、提供元の全件読み込みに戻ってしまう
+# （各タスクは自分のトリガーで 09:00 / 09:30 から動くので、止まっていたものは起動しなくてよい）。
+$WasRunning = @($RunningTasks | Where-Object {
+    $t = Get-ScheduledTask -TaskName $_ -ErrorAction SilentlyContinue
+    $t -and $t.State -eq 'Running'
+})
 
 # 止める対象は、このリポジトリでビルドしたexeだけにする。
 #
@@ -163,9 +173,12 @@ if (-not $SkipRegister) {
 
 # --- 5. 再開 -----------------------------------------------------------------
 Write-Step 'タスクを再開'
-foreach ($task in $RunningTasks) {
+foreach ($task in $WasRunning) {
     Start-ScheduledTask -TaskName $task
     Write-Output "  開始: $task"
+}
+if ($WasRunning.Count -eq 0) {
+    Write-Output "  デプロイ前に動いていたタスクはありません（各タスクは自分の時刻に起動します）"
 }
 Start-Sleep -Seconds 3
 
