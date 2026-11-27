@@ -240,10 +240,14 @@ namespace KeibaDataCollector.Services
                 }
             }
 
+            // 発走前のレースで、印の付いた馬が取り消されていたら付け直す。
+            var remarked = await ReplaceScratchedMarksAsync(targetDate, ct);
+
             // 所要時間も出す。繰り返し間隔より長くなると、次の回が多重起動禁止で弾かれ、
             // オッズ公開から反映までの遅れがそのまま伸びる。調整の判断材料として必ず残す。
             Console.WriteLine(
                 $"[{_source.SourceName}] 予想の反映完了: 新規{published}件" +
+                (remarked > 0 ? $"（取消で付け直し{remarked}件）" : "") +
                 (byScore > 0 ? $"（うち発売前スコア{byScore}件）" : "") + $" / 反映済み{already}件 / " +
                 $"発売前{notOnSale}件 / 発走済み{afterPost}件 / オッズ取得エラー{oddsError}件 / 反映失敗{failed}件 " +
                 $"（所要 {(DateTime.Now - started).TotalMinutes:0.0}分）");
@@ -298,6 +302,127 @@ namespace KeibaDataCollector.Services
             }
         }
 
+        /// <summary>
+        /// 発走までこの時間を切ったレースは、印の付いた馬が取り消されていないかを確かめる。
+        /// 予想の処理は5分ごとに動くので、1レースにつき発走前に数回確かめることになる。
+        /// </summary>
+        private static readonly TimeSpan ScratchCheckWindow = TimeSpan.FromMinutes(30);
+
+        /// <summary>
+        /// 印の付いた馬が取り消された（出走取消・除外）発走前のレースに、印を付け直す。
+        ///
+        /// 発売前スコアの印は朝の出走表（07:00）をもとに9時に付けるため、その後に取り消された馬に
+        /// 印が残る（2026-11-27: 園田8Rの◎、名古屋1Rの○。オッズの人気順の印は、発売後に取り消された馬に残る）。
+        /// 取消は単勝オッズ欄の "----" / "****" で分かるので、発走前にそれを見て、
+        /// 発売前スコアのレースはスコアの次点の馬、オッズのレースは今の人気順で付け直す。
+        /// 発走後に付け直すと結果を見てからの後出しになるため、発走前のレースだけを対象にする。
+        /// </summary>
+        private async Task<int> ReplaceScratchedMarksAsync(DateTime targetDate, CancellationToken ct)
+        {
+            List<WordPressClient.DayRace> day;
+            try
+            {
+                day = await _wp.GetDayRacesAsync(targetDate);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[{_source.SourceName}] 取消の確認でサイトの一覧を取得できませんでした（次の回に確認）: {ex.Message}");
+                return 0;
+            }
+
+            var marked = day.Where(r => Owns(r.Key) && !r.Cancelled && !r.HasResult && r.Predictions.Count > 0).ToList();
+            PostTimeStore.Apply(targetDate, marked.Select(r => r.Key));
+            var now = DateTime.Now;
+            var due = marked.Where(r => r.Key.PostDateTime.HasValue && now < r.Key.PostDateTime.Value
+                                        && r.Key.PostDateTime.Value - now <= ScratchCheckWindow).ToList();
+            if (due.Count == 0) return 0;
+            EnsureInitialized();
+
+            var replaced = 0;
+            foreach (var race in due)
+            {
+                if (ct.IsCancellationRequested) break;
+                try
+                {
+                    var odds = FetchOddsAndScratches(race.Key);
+                    if (odds == null) continue; // オッズがまだ無い・取れない。次の回に確かめる。
+                    var scratchedMarks = race.Predictions.Keys.Where(odds.Value.Scratched.Contains).ToList();
+                    if (scratchedMarks.Count == 0) continue;
+
+                    var marks = RebuildMarks(race.Key, odds.Value.ByUmaban, odds.Value.Scratched);
+                    if (marks.Count < Marks.Length)
+                    {
+                        Console.WriteLine($"[{_source.SourceName}] {race.Key.AsSlug()} 取消（{string.Join(",", scratchedMarks)}番）があったが、" +
+                                          "付け直す印が揃わないため元のまま");
+                        continue;
+                    }
+
+                    await _wp.UpsertPredictionsAsync(race.Key, marks, replace: true);
+                    replaced++;
+                    Console.WriteLine($"[{_source.SourceName}] {race.Key.AsSlug()} 取消（{string.Join(",", scratchedMarks)}番）のため印を付け直し" +
+                                      $"（{FormatMarks(race.Predictions)} → {FormatMarks(marks)}）");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[{_source.SourceName}] {race.Key.AsSlug()} 取消の確認に失敗（次の回に確認）: {ex.Message}");
+                }
+            }
+            return replaced;
+        }
+
+        /// <summary>取消の馬を除いて印を付け直す。発売前スコアのレースはスコア順、それ以外は今のオッズの人気順。</summary>
+        private Dictionary<int, string> RebuildMarks(RaceKey race, Dictionary<int, JvRecordParser.TanshoOdds> byUmaban,
+            HashSet<int> scratched)
+        {
+            var marks = new Dictionary<int, string>();
+            if (PublishesPreSale(race) && _preSale != null && _preSale.TryGetValue(race.AsSlug(), out var scored)
+                && scored.Skipped == null)
+            {
+                var ranked = scored.Runners.Where(r => !scratched.Contains(r.Umaban))
+                    .OrderByDescending(r => r.Score).ThenBy(r => r.Umaban).Select(r => r.Umaban).ToList();
+                for (int i = 0; i < Marks.Length && i < ranked.Count; i++) marks[ranked[i]] = Marks[i];
+                return marks;
+            }
+            return MarksFromOdds(byUmaban);
+        }
+
+        /// <summary>単勝オッズ（取消の馬は含まない）と、取消の馬番。オッズが取れなければ null。</summary>
+        private (Dictionary<int, JvRecordParser.TanshoOdds> ByUmaban, HashSet<int> Scratched)? FetchOddsAndScratches(RaceKey race)
+        {
+            int rc = _source.OpenRealtime(RealtimeOddsDataSpec, race.AsJvRealtimeKey());
+            if (rc != 0)
+            {
+                _source.Close();
+                return null;
+            }
+
+            Dictionary<int, JvRecordParser.TanshoOdds> byUmaban = null;
+            HashSet<int> scratched = null;
+            try
+            {
+                while (true)
+                {
+                    int size = _source.Read(out var buffer, out _);
+                    if (size == 0) break;
+                    if (size == -1) continue;
+                    if (size == -3) { Thread.Sleep(500); continue; }
+                    if (size < 0) break;
+                    if (JvRecordParser.GetRecordTypeId(buffer) != "O1") continue;
+
+                    // 後から届いたものほど新しい。
+                    byUmaban = JvRecordParser.ParseTanshoOdds(buffer).ByUmaban;
+                    scratched = JvRecordParser.ParseScratchedUmaban(buffer);
+                }
+            }
+            finally
+            {
+                _source.Close();
+            }
+
+            if (byUmaban == null) return null;
+            return (byUmaban, scratched);
+        }
+
         /// <summary>この時刻を過ぎても予想が1件も無ければ異常とみなす。</summary>
         private static readonly TimeSpan NoPredictionIsAbnormalAfter = TimeSpan.FromHours(11);
 
@@ -305,9 +430,11 @@ namespace KeibaDataCollector.Services
         /// 1レース分の印を作る。戻り値は 馬番 => 印。
         /// 人気順が取得できない馬（発売前取消・無投票など）は対象外になる。
         /// </summary>
-        private Dictionary<int, string> BuildMarks(RaceKey race)
+        private Dictionary<int, string> BuildMarks(RaceKey race) => MarksFromOdds(FetchTanshoOdds(race));
+
+        /// <summary>単勝人気順の上位から印を付ける。人気順が印の数だけ揃っていなければ空。</summary>
+        private static Dictionary<int, string> MarksFromOdds(Dictionary<int, JvRecordParser.TanshoOdds> byUmaban)
         {
-            var byUmaban = FetchTanshoOdds(race);
             var marks = new Dictionary<int, string>();
             if (byUmaban == null) return marks;
 

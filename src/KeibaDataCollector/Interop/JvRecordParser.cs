@@ -192,6 +192,27 @@ namespace KeibaDataCollector.Interop
             return (ExtractRaceKey(o1.id), byUmaban);
         }
 
+        /// <summary>
+        /// 単勝オッズ欄が取消になっている馬番（"----" 発売前取消 / "****" 発売後取消）。
+        /// 発売前スコアの印は朝の出走表で付けるため、その後に取り消された馬に印が残ることがある。
+        /// 発走前にこれで確かめて、印を付け直す（PredictionService）。
+        /// </summary>
+        public static HashSet<int> ParseScratchedUmaban(string rawRecord)
+        {
+            var o1 = new JV_O1_ODDS_TANFUKUWAKU();
+            o1.SetDataB(ref rawRecord);
+
+            var scratched = new HashSet<int>();
+            foreach (var t in o1.OddsTansyoInfo)
+            {
+                var umaban = SafeInt(t.Umaban);
+                var oddsRaw = Trim(t.Odds);
+                if (umaban > 0 && oddsRaw.Length > 0 && oddsRaw.All(c => c == '-' || c == '*'))
+                    scratched.Add(umaban);
+            }
+            return scratched;
+        }
+
         /// <summary>単勝オッズと単勝人気順の組。</summary>
         public class TanshoOdds
         {
