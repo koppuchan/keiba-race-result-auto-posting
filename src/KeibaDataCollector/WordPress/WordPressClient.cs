@@ -106,11 +106,12 @@ namespace KeibaDataCollector.WordPress
         ///  ・欠けた予想は、揃った内容で上書きできる
         /// の両方を満たす。戻り値は実際に書き込んだかどうか。
         /// </summary>
-        public async Task<bool> UpsertPredictionsAsync(RaceKey key, Dictionary<int, string> marks)
+        public async Task<bool> UpsertPredictionsAsync(RaceKey key, Dictionary<int, string> marks, bool replace = false)
         {
             var existing = await FindPostByRaceKeyAsync(key.AsSlug());
             // 既にある予想より少ない（＝より不完全な）内容で上書きしない。
-            if (existing != null && existing.PredictionMarkCount >= marks.Count) return false;
+            // replace は、印の付いた馬が取り消されたときの付け直し用（PredictionService）。
+            if (!replace && existing != null && existing.PredictionMarkCount >= marks.Count) return false;
 
             var suffix = existing != null && existing.HasRaceResult ? "結果" : "出走表";
 
@@ -228,6 +229,7 @@ namespace KeibaDataCollector.WordPress
             public bool HasPayouts;
             public int PredictionMarks;
             public bool Cancelled;
+            public Dictionary<int, string> Predictions = new Dictionary<int, string>(); // 馬番 → 印
             public int ResultHorses;  // 結果に載っている頭数（馬番で数える）
             public int CardHorses;    // 出走表の頭数（馬番で数える）
 
@@ -293,6 +295,7 @@ namespace KeibaDataCollector.WordPress
                         HasResult = HasContent(meta.RaceResult),
                         HasPayouts = HasContent(meta.Payouts),
                         PredictionMarks = CountPredictionMarks(meta.Predictions),
+                        Predictions = ParsePredictions(meta.Predictions),
                         Cancelled = meta.RaceStatus == "cancelled",
                         ResultHorses = CountHorses(meta.RaceResult),
                         CardHorses = CountHorses(meta.RaceCard),
@@ -371,6 +374,25 @@ namespace KeibaDataCollector.WordPress
         }
 
         /// <summary>予想メタ（馬番 => 印）に入っている印の数。未設定なら0。</summary>
+        /// <summary>予想（{"8":"◎",...}）を 馬番 → 印 にする。読めなければ空。</summary>
+        private static Dictionary<int, string> ParsePredictions(string metaValue)
+        {
+            var result = new Dictionary<int, string>();
+            if (!HasContent(metaValue)) return result;
+            try
+            {
+                var marks = JsonConvert.DeserializeObject<Dictionary<string, string>>(metaValue);
+                if (marks == null) return result;
+                foreach (var pair in marks)
+                    if (int.TryParse(pair.Key, out var umaban)) result[umaban] = pair.Value;
+            }
+            catch (JsonException)
+            {
+                // 壊れた値なら空扱い（印の付け直しの対象にしない）。
+            }
+            return result;
+        }
+
         private static int CountPredictionMarks(string metaValue)
         {
             if (!HasContent(metaValue)) return 0;
