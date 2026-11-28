@@ -109,8 +109,9 @@ namespace KeibaDataCollector.Scoring
                 using (var db = new HistoryDb(dbPath))
                 {
                     var index = BuildIndex(db, date, missing.SelectMany(e => e.Value.Runners).Select(r => r.KettoNum));
+                    var mining = MiningStore.TryLoad(date, date.AddDays(1));
                     foreach (var race in missing)
-                        stored[race.Key] = ScoreRace(index, date, race.Key, race.Value, weights);
+                        stored[race.Key] = ScoreRace(index, date, race.Key, race.Value, weights, mining);
                 }
                 SaveStored(date, stored);
 
@@ -140,7 +141,8 @@ namespace KeibaDataCollector.Scoring
 
         /// <summary>1レースの印を付ける。index は AdvanceTo(date) 済みであること。</summary>
         public static ScoredRace ScoreRace(HistoryIndex index, DateTime date, string slug,
-            RaceEntriesStore.Race race, ScoreWeights weights)
+            RaceEntriesStore.Race race, ScoreWeights weights,
+            Dictionary<string, Dictionary<int, (double Time, double Score)>> mining = null)
         {
             var result = new ScoredRace { ComputedAt = DateTime.Now, Weights = weights.Describe() };
             var key = Models.RaceKey.TryParseSlug(slug);
@@ -164,7 +166,7 @@ namespace KeibaDataCollector.Scoring
                     KettoNum = r.KettoNum,
                     JockeyCode = r.JockeyCode,
                     TrainerCode = r.TrainerCode,
-                })).ToList();
+                }.WithMining(mining, slug))).ToList();
 
             var x = ScoreModel.Standardize(raw);
             var w = weights.For(ScoreWeights.GroupOf(key.TrackCode));
@@ -216,7 +218,8 @@ namespace KeibaDataCollector.Scoring
         /// 過去のレースを、その日の朝の時点の情報で再現する（重み調整・評価用）。
         /// fromDay 以上 toDay 未満の日のレースを日付順に返す。index は日付順に進める。
         /// </summary>
-        public static List<RaceSample> PastRaceSamples(HistoryIndex index, int fromDay, int toDay)
+        public static List<RaceSample> PastRaceSamples(HistoryIndex index, int fromDay, int toDay,
+            Dictionary<string, Dictionary<int, (double Time, double Score)>> mining = null)
         {
             var runs = index.Runs;
             var races = new SortedDictionary<(int Day, string Track, int Race), List<HistoryDb.Run>>();
@@ -238,6 +241,7 @@ namespace KeibaDataCollector.Scoring
 
                 index.AdvanceTo(race.Key.Day);
                 var first = members[0];
+                var slug = $"{HistoryDb.DateOf(race.Key.Day):yyyyMMdd}-{race.Key.Track}-{race.Key.Race}R";
                 var raw = members.Select(r => index.Features(race.Key.Day, r.TrackCode, first.TrackSurfaceCode, first.Distance,
                     new RunnerInput
                     {
@@ -246,7 +250,7 @@ namespace KeibaDataCollector.Scoring
                         KettoNum = r.KettoNum,
                         JockeyCode = r.JockeyCode,
                         TrainerCode = r.TrainerCode,
-                    })).ToList();
+                    }.WithMining(mining, slug))).ToList();
 
                 double[] market = null;
                 if (members.All(r => !double.IsNaN(r.Odds)))
@@ -260,7 +264,7 @@ namespace KeibaDataCollector.Scoring
                 {
                     Group = ScoreWeights.GroupOf(race.Key.Track),
                     Day = race.Key.Day,
-                    Slug = $"{HistoryDb.DateOf(race.Key.Day):yyyyMMdd}-{race.Key.Track}-{race.Key.Race}R",
+                    Slug = slug,
                     X = ScoreModel.Standardize(raw),
                     MarketProb = market,
                     Chakujun = members.Select(r => r.Chakujun).ToArray(),
