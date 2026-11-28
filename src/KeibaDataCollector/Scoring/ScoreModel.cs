@@ -54,6 +54,8 @@ namespace KeibaDataCollector.Scoring
             0.2,  // training4f
             0.1,  // training1f
             0.0,  // noRecentRuns
+            0.4,  // miningTime（中央のみ。calibrate で求め直す）
+            0.4,  // miningScore
         };
 
         public double[] For(string group)

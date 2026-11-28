@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Linq;
 using System.Threading;
 using KeibaDataCollector.Interop;
 using KeibaDataCollector.Services;
@@ -79,6 +80,7 @@ namespace KeibaDataCollector
                 case "calibrate":
                 case "score":
                 case "compare":
+                case "mining":
                     // 過去データ（ローカルのSQLite）を読むだけ。実測で数分の見込み。
                     return TimeSpan.FromHours(2);
                 default:
@@ -111,6 +113,10 @@ namespace KeibaDataCollector
                         // ソースごとに独立してtry/catchする。
                         RunMorningFor(jvLink, wp);
                         RunMorningFor(umaConn, wp);
+
+                        // JRAのデータマイニング予想（発売前スコアの要素）。JV-Link は上で開いているので続けて取る。
+                        // 地方の出走表を先に反映するため、最後に行う（初回は過去1年分を取り込むため時間がかかる）。
+                        RunMiningFor(jvLink, initialize: false);
                         break;
                     }
 
@@ -235,6 +241,11 @@ namespace KeibaDataCollector
                         Scoring.ScoringCommands.Compare(AppConfig.KeibaAiHistoryDbPath, arg);
                         break;
 
+                    case "mining":
+                        // JRAのデータマイニング予想を取り込む（通常は朝一バッチが行う。手動で取り直す場合用）。
+                        RunMiningFor(jvLink, initialize: true);
+                        break;
+
                     case "setup":
                         // 初回1回だけ手動実行: 利用キー入力ダイアログを開いて設定を保存する。
                         // 片方のProgIDが未確認/未登録でもう片方の結果が分からなくなるのを避けるため、
@@ -244,7 +255,7 @@ namespace KeibaDataCollector
                         break;
 
                     default:
-                        Console.WriteLine("使い方: KeibaDataCollector.exe [setup|morning|predict|watch|catchup|probe|calibrate|score|compare]");
+                        Console.WriteLine("使い方: KeibaDataCollector.exe [setup|morning|predict|watch|catchup|probe|calibrate|score|compare|mining]");
                         Console.WriteLine("  setup   : 初回のみ。利用キー等をGUIダイアログで設定する。");
                         Console.WriteLine("  morning : 朝一バッチ。当日の出走表を取得しWordPressへ反映する。");
                         Console.WriteLine("  predict : 朝一オッズの人気順から予想印を生成しWordPressへ反映する。");
@@ -256,6 +267,7 @@ namespace KeibaDataCollector
                         Console.WriteLine("  calibrate : 発売前スコアの重みを過去1年のレースで求めて保存する（WordPressへは書き込まない）。");
                         Console.WriteLine("  score     : 発売前スコアの印を表示する。例: score / score 2026-11-15 / score 20261115-05-11R");
                         Console.WriteLine("  compare   : 公開した印と発売前スコアの印を、実際の人気・着順と比べる。例: compare（前日）/ compare 2026-11-25");
+                        Console.WriteLine("  mining    : JRAのデータマイニング予想を取り込む（通常は朝一バッチが行う）。");
                         break;
                 }
             }
@@ -314,6 +326,28 @@ namespace KeibaDataCollector
             {
                 // 片方のソースが失敗しても、もう片方は動かす。ただし失敗は終了コードに残す。
                 LogFailure(source.SourceName, "朝一バッチ失敗（このソースのみスキップして続行）", ex);
+            }
+        }
+
+        /// <summary>
+        /// JRAのデータマイニング予想を取り込む（MiningService）。失敗しても異常終了にはしない
+        /// （マイニング値が無くても、発売前スコアは他の要素で計算できるため）。
+        /// </summary>
+        private static void RunMiningFor(JvSpecComDataSource source, bool initialize)
+        {
+            try
+            {
+                if (initialize) source.Initialize(AppConfig.JvLinkSoftwareId);
+                var today = DateTime.Today;
+                var races = Scoring.RaceEntriesStore.Load(today).Keys
+                    .Select(Models.RaceKey.TryParseSlug)
+                    .Where(k => k != null && k.IsJra)
+                    .ToList();
+                new MiningService(source).Collect(today, races);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[{source.SourceName}] データマイニング予想を取り込めませんでした（予想はマイニング値なしで続行）: {ex.Message}");
             }
         }
 

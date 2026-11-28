@@ -32,6 +32,14 @@ namespace KeibaDataCollector.Scoring
                 var from = today.AddDays(-CalibrationDays);
                 Console.WriteLine($"過去データ: {db.DbPath}");
                 foreach (var line in db.DescribeCoverage(from, today)) Console.WriteLine("  " + line);
+                try
+                {
+                    using (var miningStore = new MiningStore()) Console.WriteLine("  " + miningStore.Describe());
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"  データマイニング予想: 読めませんでした（{ex.Message}）");
+                }
 
                 Console.WriteLine("過去データを読み込み中...");
                 var runs = db.LoadRuns(today.AddYears(-3), today);
@@ -45,7 +53,8 @@ namespace KeibaDataCollector.Scoring
                                    .ToDictionary(g => g.Key, g => g.Min(r => r.Day));
 
                 var index = new HistoryIndex(runs, sires, trainings);
-                var samples = PreSaleScorer.PastRaceSamples(index, HistoryDb.DayOf(from), HistoryDb.DayOf(today));
+                var mining = MiningStore.TryLoad(from, today);
+                var samples = PreSaleScorer.PastRaceSamples(index, HistoryDb.DayOf(from), HistoryDb.DayOf(today), mining);
                 Console.WriteLine($"  再現したレース {samples.Count:N0}件（{(DateTime.Now - started).TotalSeconds:0}秒）");
 
                 var current = ScoreWeights.Load();
@@ -148,10 +157,11 @@ namespace KeibaDataCollector.Scoring
                 if (entries.Count > 0)
                 {
                     var index = PreSaleScorer.BuildIndex(db, date, entries.SelectMany(e => e.Value.Runners).Select(r => r.KettoNum));
+                    var mining = MiningStore.TryLoad(date, date.AddDays(1));
                     foreach (var race in entries.OrderBy(e => e.Key))
                     {
                         if (onlySlug != null && race.Key != onlySlug) continue;
-                        var scored = PreSaleScorer.ScoreRace(index, date, race.Key, race.Value, weights);
+                        var scored = PreSaleScorer.ScoreRace(index, date, race.Key, race.Value, weights, mining);
                         if (scored.Skipped != null)
                         {
                             Console.WriteLine($"{race.Key} 印なし（{scored.Skipped}）");
@@ -171,7 +181,7 @@ namespace KeibaDataCollector.Scoring
                 var sires = db.LoadSires(runs.Select(r => r.KettoNum));
                 var history = new HistoryIndex(runs, sires, trainings);
                 var day = HistoryDb.DayOf(date);
-                var samples = PreSaleScorer.PastRaceSamples(history, day, day + 1)
+                var samples = PreSaleScorer.PastRaceSamples(history, day, day + 1, MiningStore.TryLoad(date, date.AddDays(1)))
                     .Where(s => onlySlug == null || s.Slug == onlySlug).ToList();
                 if (samples.Count == 0)
                 {
@@ -235,7 +245,7 @@ namespace KeibaDataCollector.Scoring
 
                 var history = new HistoryIndex(runs, db.LoadSires(runs.Select(r => r.KettoNum)),
                     db.LoadTraining(date.AddDays(-15), date));
-                var replay = PreSaleScorer.PastRaceSamples(history, day, day + 1).ToDictionary(
+                var replay = PreSaleScorer.PastRaceSamples(history, day, day + 1, MiningStore.TryLoad(date, date.AddDays(1))).ToDictionary(
                     s => s.Slug, s => ScoreModel.Ranking(s, weights.For(s.Group)).Take(4).Select(i => s.Umaban[i]).ToList());
 
                 // 公開した印と発売前スコアの両方があり、結果も分かっているレースだけで比べる（同じレースで比べないと公平でない）。

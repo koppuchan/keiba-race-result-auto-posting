@@ -24,12 +24,15 @@ namespace KeibaDataCollector.Scoring
         public const int Training4F = 11;    // 調教 4ハロン（直近2週間の最終追い切り）
         public const int Training1F = 12;    // 調教 ラスト1ハロン
         public const int NoRecentRuns = 13;  // 直近1年に出走が無い（新馬・休み明け）
+        public const int MiningTime = 14;    // JRAデータマイニング予想（タイム型: 予想走破タイム）。中央のみ
+        public const int MiningScore = 15;   // JRAデータマイニング予想（対戦型: 予測スコア）。中央のみ
 
         public static readonly string[] Names =
         {
             "form3", "prevFinish", "prevPopularity", "agari3f", "timeIndex",
             "jockeyWin", "jockeyTop3", "trainerWin", "trainerTop3",
             "draw", "sire", "training4f", "training1f", "noRecentRuns",
+            "miningTime", "miningScore",
         };
 
         public static readonly string[] Labels =
@@ -37,6 +40,7 @@ namespace KeibaDataCollector.Scoring
             "近3走の着順", "前走着順", "前走人気", "上がり3F", "タイム指数",
             "騎手勝率", "騎手複勝率", "調教師勝率", "調教師複勝率",
             "枠順", "父（血統）", "調教4F", "調教ラスト1F", "近1年の出走なし",
+            "マイニング（タイム型）", "マイニング（対戦型）",
         };
 
         public static int Count => Names.Length;
@@ -51,6 +55,21 @@ namespace KeibaDataCollector.Scoring
         public string KettoNum;
         public string JockeyCode;
         public string TrainerCode;
+        // JRAデータマイニング予想（MiningStore）。無い馬・地方競馬は NaN。
+        public double MiningTime = double.NaN;
+        public double MiningScore = double.NaN;
+
+        /// <summary>レース（レースキー）のマイニング値から、この馬の値を入れる。</summary>
+        public RunnerInput WithMining(Dictionary<string, Dictionary<int, (double Time, double Score)>> mining, string slug)
+        {
+            if (mining != null && slug != null && mining.TryGetValue(slug, out var horses)
+                && horses.TryGetValue(Umaban, out var value))
+            {
+                MiningTime = value.Time;
+                MiningScore = value.Score;
+            }
+            return this;
+        }
     }
 
     /// <summary>
@@ -301,6 +320,10 @@ namespace KeibaDataCollector.Scoring
                 if (times.Count > 0) f[Factors.TimeIndex] = times.Max(); // 近3走のうち一番良いもの
             }
             f[Factors.NoRecentRuns] = recent.Count == 0 ? 1 : 0;
+
+            // データマイニング予想。タイム型は短いほど評価が高いので符号を反転する。
+            f[Factors.MiningTime] = double.IsNaN(runner.MiningTime) ? double.NaN : -runner.MiningTime;
+            f[Factors.MiningScore] = runner.MiningScore;
 
             if (runner.JockeyCode != null)
             {
